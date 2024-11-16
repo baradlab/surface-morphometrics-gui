@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import logging
 from typing import Dict, Any, List, Optional
+from qtpy.QtWidgets import QScrollArea,QWidget, QVBoxLayout
 
 class ConfigYAMLPreserver:
     """Preserves YAML formatting while allowing updates"""
@@ -13,7 +14,9 @@ class ConfigYAMLPreserver:
         self.yaml_path = Path(yaml_path)
         with open(self.yaml_path, 'r') as f:
             self.content = f.read()
-        self.yaml_data = yaml.safe_load(self.content)
+        if not self.content.strip():  # Handle empty files
+            self.content = ""
+        self.yaml_data = yaml.safe_load(self.content) or {}
         self._static_fields = {
             'distance_and_orientation_measurements': {
                 'intra': ['IMM', 'OMM', 'ER'],
@@ -46,11 +49,14 @@ class ConfigYAMLPreserver:
             return '\n'.join(nested)
         return str(value)
 
-    def _find_yaml_path(self, path: List[str]) -> tuple:
-        """Find the line number and indentation for a given path"""
+    def _find_or_create_section(self, path: List[str], lines: List[str]) -> tuple:
+        """Find or create a section for the given path"""
+        if not lines:
+            # If file is empty, create initial content
+            return 0, 0, 0
+            
         current_indent = 0
         current_path = []
-        lines = self.content.splitlines()
         
         for i, line in enumerate(lines):
             stripped = line.lstrip()
@@ -72,6 +78,8 @@ class ConfigYAMLPreserver:
                     # Find the end of this section
                     end_line = i + 1
                     while end_line < len(lines):
+                        if end_line >= len(lines):
+                            break
                         next_line = lines[end_line].lstrip()
                         if not next_line or next_line.startswith('#'):
                             end_line += 1
@@ -81,12 +89,13 @@ class ConfigYAMLPreserver:
                             break
                         end_line += 1
                     return i, indent, end_line
-                    
-        return -1, 0, -1
+        
+        # Section not found, append at end
+        return len(lines), len(path) * 2, len(lines)
 
     def update(self, updates: Dict[str, Any]) -> None:
         """Update values while preserving formatting"""
-        lines = self.content.splitlines()
+        lines = self.content.splitlines() if self.content.strip() else []
         
         def update_nested(current_updates: Dict[str, Any], prefix: List[str] = None):
             if prefix is None:
@@ -95,7 +104,7 @@ class ConfigYAMLPreserver:
             for key, value in current_updates.items():
                 current_path = prefix + [key]
                 
-                # Check if this is a static field that shouldn't be updated
+                # Skip static fields
                 skip_update = False
                 temp_dict = self._static_fields
                 for path_part in current_path:
@@ -110,41 +119,107 @@ class ConfigYAMLPreserver:
                 if skip_update:
                     continue
                 
+                # Find or create section
+                line_num, indent, end_line = self._find_or_create_section(current_path, lines)
+                
+                # Format the value
+                formatted_value = self._format_value(value, indent + 2)
+                
+                # Create new lines
+                new_lines = []
                 if isinstance(value, dict):
-                    update_nested(value, current_path)
+                    new_lines.append(f"{' ' * indent}{key}:")
+                    for line in formatted_value.split('\n'):
+                        new_lines.append(line)
                 else:
-                    line_num, indent, end_line = self._find_yaml_path(current_path)
-                    if line_num >= 0:
-                        formatted_value = self._format_value(value, indent + 2)
-                        if '\n' in formatted_value:
-                            lines[line_num] = f"{' ' * indent}{key}:\n{formatted_value}"
-                            # Remove any old nested lines
-                            if end_line > line_num + 1:
-                                del lines[line_num + 1:end_line]
-                        else:
-                            lines[line_num] = f"{' ' * indent}{key}: {formatted_value}"
+                    if '\n' in formatted_value:
+                        new_lines.append(f"{' ' * indent}{key}:")
+                        for line in formatted_value.split('\n'):
+                            new_lines.append(line)
+                    else:
+                        new_lines.append(f"{' ' * indent}{key}: {formatted_value}")
+                
+                # Update the lines list
+                if line_num >= len(lines):
+                    # Append to end
+                    if lines and not lines[-1].strip():
+                        lines.extend(new_lines)
+                    else:
+                        lines.append('')  # Add blank line before new section
+                        lines.extend(new_lines)
+                else:
+                    # Replace existing section
+                    lines[line_num:end_line] = new_lines
 
         update_nested(updates)
-        self.content = '\n'.join(lines)
-        # Update internal representation
+        self.content = '\n'.join(lines) + '\n'
         self.yaml_data = yaml.safe_load(self.content)
 
     def save(self) -> None:
         """Save changes back to file"""
-        backup_path = self.yaml_path.with_suffix('.bak')
-        self.yaml_path.rename(backup_path)
-        
+        if self.yaml_path.exists():
+            backup_path = self.yaml_path.with_suffix('.bak')
+            self.yaml_path.rename(backup_path)
+            
         try:
             with open(self.yaml_path, 'w') as f:
                 f.write(self.content)
         except Exception as e:
-            backup_path.rename(self.yaml_path)
+            if 'backup_path' in locals():
+                backup_path.rename(self.yaml_path)
             raise e
+
+class SegmentationEntry(widgets.Container):
+    """A single segmentation entry with label and value fields"""
+    def __init__(self, label='', value=1):
+        super().__init__(layout='horizontal')
+        self.label_field = widgets.LineEdit(value=label, label='Label')
+        self.value_field = widgets.SpinBox(value=value, label='Value')
+        self.remove_button = widgets.PushButton(text='Remove')
+        self.extend([self.label_field, self.value_field, self.remove_button])
+
+class SegmentationContainer(widgets.Container):
+    """Container for multiple segmentation entries"""
+    def __init__(self):
+        super().__init__(layout='vertical')
+        self.entries = []
+        self.add_button = widgets.PushButton(text='Add Entry')
+        self.add_button.clicked.connect(self._add_entry)
+        self.extend([self.add_button])
+
+    def _add_entry(self, label='', value=1):
+        entry = SegmentationEntry(label=label, value=value)
+        entry.remove_button.clicked.connect(lambda: self._remove_entry(entry))
+        self.entries.append(entry)
+        self.insert(-1, entry)
+
+    def _remove_entry(self, entry):
+        if entry in self.entries:
+            self.entries.remove(entry)
+            self.remove(entry)
+    
+    def get_values(self):
+        return {
+            entry.label_field.value: entry.value_field.value 
+            for entry in self.entries
+            if entry.label_field.value.strip()  # Only include non-empty labels
+        }
+    
+    def _set_values(self, values: dict):
+        """Set segmentation values from dictionary"""
+        # Clear existing entries
+        while self.entries:
+            self._remove_entry(self.entries[0])
+        
+        # Add new entries
+        for label, value in values.items():
+            self._add_entry(label=label, value=value)
 
 class ConfigEditor(widgets.Container):  
     def __init__(self):
         super().__init__(layout='vertical')  # Specify layout
         
+
         # Create containers for each section
         self.containers = {
             'file': widgets.Container(
@@ -165,14 +240,7 @@ class ConfigEditor(widgets.Container):
                     widgets.FileEdit(name='work_dir', label='Work Directory', mode='d')
                 ]
             ),
-            'segmentation': widgets.Container(
-                layout='vertical',
-                widgets=[
-                    widgets.SpinBox(name='omm_value', label='OMM Value', value=1),
-                    widgets.SpinBox(name='imm_value', label='IMM Value', value=2),
-                    widgets.SpinBox(name='er_value', label='ER Value', value=3)
-                ]
-            ),
+            'segmentation': SegmentationContainer(),
             'surface': widgets.Container(
                 layout='vertical',
                 widgets=[
@@ -260,11 +328,7 @@ class ConfigEditor(widgets.Container):
         return {
             'data_dir': str(self.containers['directories'].data_dir.value),
             'work_dir': str(self.containers['directories'].work_dir.value),
-            'segmentation_values': {
-                'OMM': self.containers['segmentation'].omm_value.value,
-                'IMM': self.containers['segmentation'].imm_value.value,
-                'ER': self.containers['segmentation'].er_value.value
-            },
+            'segmentation_values': self.containers['segmentation'].get_values(),
             'surface_generation': {
                 'angstroms': self.containers['surface'].angstroms.value,
                 'ultrafine': self.containers['surface'].ultrafine.value,
@@ -293,6 +357,7 @@ class ConfigEditor(widgets.Container):
             },
             'cores': self.containers['cores'].cores.value
         }
+        return values
 
     def _set_values(self, config: dict):
         """Set widget values from config"""
@@ -302,9 +367,7 @@ class ConfigEditor(widgets.Container):
         
         # Segmentation
         seg_values = config.get('segmentation_values', {})
-        self.containers['segmentation'].omm_value.value = seg_values.get('OMM', 1)
-        self.containers['segmentation'].imm_value.value = seg_values.get('IMM', 2)
-        self.containers['segmentation'].er_value.value = seg_values.get('ER', 3)
+        self.containers['segmentation']._set_values(seg_values)
         
         # Surface generation
         surf_gen = config.get('surface_generation', {})
