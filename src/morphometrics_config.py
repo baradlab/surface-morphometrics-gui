@@ -37,123 +37,39 @@ class ConfigYAMLPreserver:
                 return f'"{value}"'
             return value
         elif isinstance(value, list):
-            return '\n'.join(f"{indent}- {self._format_value(item)}" for item in value)
+            if not value:  # Empty list
+                return '[]'
+            return '\n'.join(f"{indent}- {self._format_value(item, indent_level)}" for item in value)
         elif isinstance(value, dict):
+            if not value:  # Empty dict
+                return '{}'
             nested = []
             for k, v in value.items():
                 formatted_value = self._format_value(v, indent_level + 2)
-                if '\n' in formatted_value:
+                if isinstance(v, (list, dict)) and v:  # Non-empty list or dict
                     nested.append(f"{indent}{k}:\n{formatted_value}")
                 else:
                     nested.append(f"{indent}{k}: {formatted_value}")
             return '\n'.join(nested)
         return str(value)
 
-    def _find_or_create_section(self, path: List[str], lines: List[str]) -> tuple:
-        """Find or create a section for the given path"""
-        if not lines:
-            # If file is empty, create initial content
-            return 0, 0, 0
-            
-        current_indent = 0
-        current_path = []
-        
-        for i, line in enumerate(lines):
-            stripped = line.lstrip()
-            if not stripped or stripped.startswith('#'):
-                continue
-                
-            indent = len(line) - len(stripped)
-            if indent <= current_indent:
-                while current_path and indent <= current_indent:
-                    current_path.pop()
-                    current_indent -= 2
-                    
-            if ':' in stripped:
-                key = stripped.split(':', 1)[0].strip()
-                current_path.append(key)
-                current_indent = indent
-                
-                if current_path == path:
-                    # Find the end of this section
-                    end_line = i + 1
-                    while end_line < len(lines):
-                        if end_line >= len(lines):
-                            break
-                        next_line = lines[end_line].lstrip()
-                        if not next_line or next_line.startswith('#'):
-                            end_line += 1
-                            continue
-                        next_indent = len(lines[end_line]) - len(lines[end_line].lstrip())
-                        if next_indent <= indent:
-                            break
-                        end_line += 1
-                    return i, indent, end_line
-        
-        # Section not found, append at end
-        return len(lines), len(path) * 2, len(lines)
-
     def update(self, updates: Dict[str, Any]) -> None:
         """Update values while preserving formatting"""
-        lines = self.content.splitlines() if self.content.strip() else []
+        current_data = yaml.safe_load(self.content) or {}
         
-        def update_nested(current_updates: Dict[str, Any], prefix: List[str] = None):
-            if prefix is None:
-                prefix = []
-                
-            for key, value in current_updates.items():
-                current_path = prefix + [key]
-                
-                # Skip static fields
-                skip_update = False
-                temp_dict = self._static_fields
-                for path_part in current_path:
-                    if path_part in temp_dict:
-                        temp_dict = temp_dict[path_part]
-                        if not isinstance(temp_dict, dict):
-                            skip_update = True
-                            break
-                    else:
-                        temp_dict = {}
-                
-                if skip_update:
-                    continue
-                
-                # Find or create section
-                line_num, indent, end_line = self._find_or_create_section(current_path, lines)
-                
-                # Format the value
-                formatted_value = self._format_value(value, indent + 2)
-                
-                # Create new lines
-                new_lines = []
-                if isinstance(value, dict):
-                    new_lines.append(f"{' ' * indent}{key}:")
-                    for line in formatted_value.split('\n'):
-                        new_lines.append(line)
+        # Deep merge updates with current data
+        def deep_merge(d1, d2):
+            for k, v in d2.items():
+                if k in d1 and isinstance(d1[k], dict) and isinstance(v, dict):
+                    deep_merge(d1[k], v)
                 else:
-                    if '\n' in formatted_value:
-                        new_lines.append(f"{' ' * indent}{key}:")
-                        for line in formatted_value.split('\n'):
-                            new_lines.append(line)
-                    else:
-                        new_lines.append(f"{' ' * indent}{key}: {formatted_value}")
-                
-                # Update the lines list
-                if line_num >= len(lines):
-                    # Append to end
-                    if lines and not lines[-1].strip():
-                        lines.extend(new_lines)
-                    else:
-                        lines.append('')  # Add blank line before new section
-                        lines.extend(new_lines)
-                else:
-                    # Replace existing section
-                    lines[line_num:end_line] = new_lines
-
-        update_nested(updates)
-        self.content = '\n'.join(lines) + '\n'
-        self.yaml_data = yaml.safe_load(self.content)
+                    d1[k] = v
+        
+        deep_merge(current_data, updates)
+        
+        # Format the entire config as a string
+        self.content = self._format_value(current_data) + '\n'
+        self.yaml_data = current_data
 
     def save(self) -> None:
         """Save changes back to file"""
@@ -215,10 +131,101 @@ class SegmentationContainer(widgets.Container):
         for label, value in values.items():
             self._add_entry(label=label, value=value)
 
+class IntraListEditor(widgets.Container):
+    """Editor for intra membrane list"""
+    def __init__(self):
+        super().__init__(layout='vertical')
+        self.entries = []
+        self.add_button = widgets.PushButton(text='Add Membrane')
+        self.add_button.clicked.connect(self._add_entry)
+        self.extend([self.add_button])
+
+    def _add_entry(self, label=''):
+        entry = widgets.LineEdit(value= label)
+        remove_button = widgets.PushButton(text='Remove')
+        container = widgets.Container(layout='horizontal')
+        container.extend([entry, remove_button])
+
+        def remove():
+            self.entries.remove((entry,container))
+            self.remove(container)
+
+        remove_button.clicked.connect(remove)
+        self.entries.append((entry, container)) 
+        self.insert(-1, container)
+
+    def get_values(self):
+        return [entry.value for entry, _ in self.entries if entry.value.strip()]
+    
+    def set_values(self, values):
+        # Clear existing
+        while self.entries:
+            _, container = self.entries[0]
+            self.entries.pop(0)
+            self.remove(container)
+        
+        # Add new
+        for value in values:
+            self._add_entry(value)
+
+class InterDictEditor(widgets.Container):
+    """Editor for inter membrane dictionary"""
+    def __init__(self):
+        super().__init__(layout='vertical')
+        self.entries = {}  # key -> (key_edit, value_list_editor, container)
+        self.add_button = widgets.PushButton(text='Add Membrane Pair')
+        self.add_button.clicked.connect(lambda: self._add_entry())
+        self.extend([self.add_button])
+
+    def _add_entry(self, key='', values=None):
+        if values is None:
+            values = []
+            
+        key_edit = widgets.LineEdit(value=key, label='Membrane:')
+        value_editor = IntraListEditor()  # Reuse IntraListEditor for the target list
+        value_editor.set_values(values)
+        
+        remove_button = widgets.PushButton(text='Remove')
+        header = widgets.Container(layout='horizontal')
+        header.extend([key_edit, remove_button])
+        
+        container = widgets.Container(layout='vertical')
+        container.extend([header, value_editor])
+        
+        def remove():
+            if key_edit.value in self.entries:
+                self.entries.pop(key_edit.value)
+                self.remove(container)
+                
+        remove_button.clicked.connect(remove)
+        
+        self.entries[key] = (key_edit, value_editor, container)
+        self.insert(-1, container)
+
+    def get_values(self):
+        return {
+            entry[0].value: entry[1].get_values()
+            for entry in self.entries.values()
+            if entry[0].value.strip()
+        }
+
+    def set_values(self, values):
+        # Clear existing
+        for entry in list(self.entries.values()):
+            self.remove(entry[2])
+        self.entries.clear()
+        
+        # Add new
+        for key, value_list in values.items():
+            self._add_entry(key, value_list)
+
+            
 class ConfigEditor(widgets.Container):  
     def __init__(self):
         super().__init__(layout='vertical')  # Specify layout
         
+        intra_editor = IntraListEditor()
+        inter_editor = InterDictEditor()
 
         # Create containers for each section
         self.containers = {
@@ -264,6 +271,7 @@ class ConfigEditor(widgets.Container):
                     widgets.FloatSpinBox(name='exclude_borders', label='Exclude Borders', value=1.0)
                 ]
             ),
+            
             'measurements': widgets.Container(
                 layout='vertical',
                 widgets=[
@@ -271,7 +279,11 @@ class ConfigEditor(widgets.Container):
                     widgets.FloatSpinBox(name='maxdist', label='Max Distance', value=400.0),
                     widgets.FloatSpinBox(name='tolerance', label='Tolerance', value=0.1),
                     widgets.CheckBox(name='verticality', label='Measure Verticality', value=True),
-                    widgets.CheckBox(name='relative_orientation', label='Relative Orientation', value=True)
+                    widgets.CheckBox(name='relative_orientation', label='Relative Orientation', value=True),
+                    widgets.Label(value='Intra Membrane Measurements:'),
+                    intra_editor,
+                    widgets.Label(value='Inter-membrane Measurements:'),
+                    inter_editor
                 ]
             ),
             'cores': widgets.Container(
@@ -301,6 +313,9 @@ class ConfigEditor(widgets.Container):
 
         ])
         
+        self._intra_editor = intra_editor
+        self._inter_editor = inter_editor
+
         # Connect signals
         self.containers['file'].config_file.changed.connect(self._load_config)
         self.save_button.clicked.connect(self._save_config)
@@ -352,8 +367,8 @@ class ConfigEditor(widgets.Container):
                 'tolerance': self.containers['measurements'].tolerance.value,
                 'verticality': self.containers['measurements'].verticality.value,
                 'relative_orientation': self.containers['measurements'].relative_orientation.value,
-                'intra': ['IMM', 'OMM', 'ER'],
-                'inter': {'OMM': ['IMM', 'ER']}
+                'intra': self._intra_editor.get_values(),
+                'inter': self._inter_editor.get_values()
             },
             'cores': self.containers['cores'].cores.value
         }
@@ -396,6 +411,8 @@ class ConfigEditor(widgets.Container):
         self.containers['measurements'].tolerance.value = dist_meas.get('tolerance', 0.1)
         self.containers['measurements'].verticality.value = dist_meas.get('verticality', True)
         self.containers['measurements'].relative_orientation.value = dist_meas.get('relative_orientation', True)
+        self._intra_editor.set_values(dist_meas.get('intra', []))
+        self._inter_editor.set_values(dist_meas.get('inter', {}))
         
         # Cores
         self.containers['cores'].cores.value = config.get('cores', 4)
@@ -423,8 +440,15 @@ if __name__ == "__main__":
     # Create and show viewer with widget
     viewer = napari.Viewer()
     widget = ConfigEditor()
+    
+    # Create a scroll area
+    scroll_area = QScrollArea()
+    scroll_area.setWidget(widget.native)
+    scroll_area.setWidgetResizable(True)
+    
+    # Add the scroll area as a dock widget
     viewer.window.add_dock_widget(
-        widget,
+        scroll_area,
         name='Configuration Editor',
         area='right'
     )
