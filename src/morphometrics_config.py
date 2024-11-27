@@ -322,6 +322,17 @@ class ConfigEditor(widgets.Container):
         
         self.yaml_preserver = None
 
+    def set_widgets_enabled(self, enabled: bool):
+        """Enable or disable all widgets"""
+        # Disable all container widgets
+        for container in self.containers.values():
+            if hasattr(container, 'native'):
+                for child in container.native.findChildren(QWidget):
+                    child.setEnabled(enabled)
+            
+        # Disable save button
+        self.save_button.enabled = enabled
+
     def _load_config(self, file_path: str):
         """Load configuration from file"""
         if not file_path:
@@ -432,24 +443,3 @@ class ConfigEditor(widgets.Container):
             
         except Exception as e:
             logging.error(f"Error saving configuration: {str(e)}")
-
-if __name__ == "__main__":
-    # Setup logging
-    logging.basicConfig(level=logging.INFO)
-    
-    # Create and show viewer with widget
-    viewer = napari.Viewer()
-    widget = ConfigEditor()
-    
-    # Create a scroll area
-    scroll_area = QScrollArea()
-    scroll_area.setWidget(widget.native)
-    scroll_area.setWidgetResizable(True)
-    
-    # Add the scroll area as a dock widget
-    viewer.window.add_dock_widget(
-        scroll_area,
-        name='Configuration Editor',
-        area='right'
-    )
-    napari.run()
