@@ -17,12 +17,6 @@ class ConfigYAMLPreserver:
         if not self.content.strip():  # Handle empty files
             self.content = ""
         self.yaml_data = yaml.safe_load(self.content) or {}
-        self._static_fields = {
-            'distance_and_orientation_measurements': {
-                'intra': ['IMM', 'OMM', 'ER'],
-                'inter': {'OMM': ['IMM', 'ER']}
-            }
-        }
 
     def _format_value(self, value: Any, indent_level: int = 0) -> str:
         """Format a value for YAML while preserving type and handling nested structures"""

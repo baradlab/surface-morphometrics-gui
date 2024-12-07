@@ -2,10 +2,9 @@ import napari
 from magicgui import magicgui, widgets
 from qtpy.QtWidgets import QScrollArea, QTabWidget, QVBoxLayout, QWidget
 
-
-
 from morphometrics_config import ConfigEditor
 from jobs.seg_to_mesh import SegToMeshSubmissionWidget
+from plugins.tomoslice_plugin import TomoslicePlugin
 
 def main():
     
@@ -23,6 +22,9 @@ def main():
         # Create widgets
         config_editor = ConfigEditor()
         job_widget = SegToMeshSubmissionWidget(config_editor)
+        
+        # Create tomoslice plugin
+        tomoslice = TomoslicePlugin(viewer, config_editor)
         
         # Create scroll areas
         config_scroll = QScrollArea()
@@ -55,5 +57,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
