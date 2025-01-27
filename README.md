@@ -12,6 +12,35 @@ The Surface Morphometrics GUI enables researchers to:
   - Relative orientation between membrane surfaces
   - Statistical analysis of membrane features across multiple samples
 
+## Prerequisites
+- [ ] Install the surface morphometrics pipeline [here](https://github.com/GrotjahnLab/surface_morphometrics)
+- Python 3.8 or higher
+
+## Dependencies
+- [ ] napari
+- [ ] napari-tomoslice
+
+## Installation Steps
+1. Clone the repository
+```bash
+git clone https://github.com/baradlab/surface_morphometrics.git
+cd surface-morphometrics-gui
+```
+2. Activate the conda environment that was created during the installation of the surface morphometrics pipeline
+```bash
+conda activate morphometrics
+```
+3. Install dependencies
+```bash
+pip install -r requirements.txt
+```
+4. Run the GUI
+1. Make sure you are in the root directory of the repository and virtual environment is activated
+2. Run the main script
+```bash
+python main.py
+```
+
 ## Features (Planned)
 - [ ] Interactive visualization of membrane segmentations
 - [ ] Configuration file editor
