@@ -5,9 +5,9 @@ from qtpy.QtWidgets import QScrollArea, QTabWidget, QVBoxLayout, QWidget
 from morphometrics_config import ConfigEditor
 from jobs.seg_to_mesh import SegToMeshSubmissionWidget
 from plugins.tomoslice_plugin import TomoslicePlugin
+from experiment_manager import ExperimentManager
 
 def main():
-    
     try:
         # Create the viewer
         viewer = napari.Viewer()
@@ -20,6 +20,7 @@ def main():
         tabs = QTabWidget()
         
         # Create widgets
+        experiment_manager = ExperimentManager(viewer)
         config_editor = ConfigEditor()
         job_widget = SegToMeshSubmissionWidget(config_editor)
         
@@ -27,6 +28,10 @@ def main():
         tomoslice = TomoslicePlugin(viewer, config_editor)
         
         # Create scroll areas
+        experiment_scroll = QScrollArea()
+        experiment_scroll.setWidget(experiment_manager)
+        experiment_scroll.setWidgetResizable(True)
+        
         config_scroll = QScrollArea()
         config_scroll.setWidget(config_editor.native)
         config_scroll.setWidgetResizable(True)
@@ -36,6 +41,7 @@ def main():
         job_scroll.setWidgetResizable(True)
         
         # Add tabs
+        tabs.addTab(experiment_scroll, "Experiment")
         tabs.addTab(config_scroll, "Configuration")
         tabs.addTab(job_scroll, "Segmentation to Mesh")
         
