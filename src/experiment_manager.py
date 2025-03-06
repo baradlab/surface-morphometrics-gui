@@ -79,8 +79,7 @@ class SegmentationContainer(widgets.Container):
 
     def save_entries(self):
         """Save current segmentation entries to config.yml"""
-        from qtpy.QtWidgets import QMessageBox
-        import yaml
+        
         
         # Create segmentation values dictionary
         segmentation_values = {
