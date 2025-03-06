@@ -1,5 +1,4 @@
 from pathlib import Path
-import shutil
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QLabel, QFileDialog, QHBoxLayout, QComboBox, QMessageBox, QSpinBox
 )
@@ -7,7 +6,7 @@ from qtpy.QtCore import Qt
 from magicgui import widgets
 from ruamel.yaml import YAML
 import matplotlib.pyplot as plt
-import os
+
 
 yaml = YAML()
 USE_RUAMEL = True
