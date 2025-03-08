@@ -20,12 +20,12 @@ def main():
         tabs = QTabWidget()
         
         # Create widgets
-        experiment_manager = ExperimentManager(viewer)
         config_editor = ConfigEditor()
+        experiment_manager = ExperimentManager(viewer)
         job_widget = SegToMeshSubmissionWidget(config_editor)
         
         # Create tomoslice plugin
-        tomoslice = TomoslicePlugin(viewer, config_editor)
+        tomoslice = TomoslicePlugin(viewer, experiment_manager)
         
         # Create scroll areas
         experiment_scroll = QScrollArea()

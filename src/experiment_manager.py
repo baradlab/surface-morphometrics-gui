@@ -1,26 +1,127 @@
 from pathlib import Path
-import shutil
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QLabel, QFileDialog, QHBoxLayout, QComboBox, QMessageBox, QSpinBox
 )
 from qtpy.QtCore import Qt
 from magicgui import widgets
+from ruamel.yaml import YAML
+import matplotlib.pyplot as plt
+import os
+import napari
+from napari.utils.colormaps import label_colormap
 
-# Try to use ruamel.yaml for better YAML handling
-try:
-    from ruamel.yaml import YAML
-    yaml = YAML()
-    USE_RUAMEL = True
-except ImportError:
-    import yaml  # Fall back to PyYAML
-    USE_RUAMEL = False
-    print("ruamel.yaml not found. Falling back to PyYAML. Some features may be limited.")
 
+yaml = YAML()
+USE_RUAMEL = True
+
+class SegmentationEntry(widgets.Container):
+    """A single segmentation entry with label and value fields"""
+    def __init__(self, label='', value=1, viewer=None):
+        super().__init__(layout='horizontal')
+        self.viewer = viewer
+        self.label_field = widgets.LineEdit(value=label, label='Label')
+        self.value_field = widgets.SpinBox(value=value, label='Value')
+        
+        # Add simple color indicator
+        self.color_indicator = widgets.PushButton()
+        self.color_indicator.min_width = 20
+        self.color_indicator.max_width = 20
+        self.color_indicator.enabled = False
+        self._update_color()
+        
+        self.remove_button = widgets.PushButton(text='Remove')
+        self.extend([self.label_field, self.value_field, self.color_indicator, self.remove_button])
+
+        # Connect value changes to color updates
+        self.value_field.changed.connect(self._update_color)
+
+
+    def _update_color(self):
+        """Update the color indicator based on the value"""
+        try:
+            if not self.viewer:
+                return
+                
+            label_value = self.value_field.value
+            if label_value < 0:
+                return
+                
+            for layer in self.viewer.layers:
+                if isinstance(layer, napari.layers.Labels):
+                    try:
+                        color = layer.get_color(label_value)
+                        r, g, b = (int(c * 255) for c in color[:3])
+                        hex_color = f"#{r:02x}{g:02x}{b:02x}"
+                        self.color_indicator.native.setStyleSheet(
+                            f"background-color: {hex_color}; border: none; min-width: 20px; max-width: 20px;"
+                        )
+                        return
+                    except Exception:
+                        continue
+
+            self.color_indicator.native.setStyleSheet("background-color: #ffffff; border: none; min-width: 20px; max-width: 20px;")
+            
+        except Exception:
+            self.color_indicator.native.setStyleSheet("background-color: #ff0000; border: none; min-width: 20px; max-width: 20px;")
+
+
+class SegmentationContainer(widgets.Container):
+    """Container for multiple segmentation entries"""
+    def __init__(self, experiment_manager):
+        super().__init__(layout='vertical')
+        self._entries = []
+        self.add_button = widgets.PushButton(text='Add Entry')
+        self.add_button.clicked.connect(self._add_entry)
+        self.extend([self.add_button])
+        self.experiment_manager = experiment_manager
+
+    @property
+    def entries(self):
+        """Get list of current segmentation entries"""
+        return self._entries
+
+    @entries.setter
+    def entries(self, value):
+        self._entries = value
+
+    def _set_values(self, values: dict):
+        """Set segmentation values from dictionary"""
+        # Clear existing entries
+        while self.entries:
+            self._remove_entry(self.entries[0])
+        
+        # Add new entries
+        for label, value in values.items():
+            self._add_entry(label=label, value=value)
+
+    def _add_entry(self, label='', value=1):
+        """Add a new segmentation entry"""
+        entry = SegmentationEntry(label=label, value=value, viewer=self.experiment_manager.viewer)
+        self.entries.append(entry)
+        self.insert(-1, entry)
+
+    def _remove_entry(self, entry):
+        if entry in self.entries:
+            self.entries.remove(entry)
+            self.remove(entry)
+    
+    def get_values(self):
+        return {
+            entry.label_field.value: entry.value_field.value 
+            for entry in self.entries
+            if entry.label_field.value.strip()  # Only include non-empty labels
+        }
+    
 
 class ExperimentManager(QWidget):
     def __init__(self, viewer):
         super().__init__()
         self.viewer = viewer
+        self.config_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            'config.yml'
+        )
+        self.current_config = {}
         self.layout = QVBoxLayout()
         self.setLayout(self.layout)
         self.layout.setSpacing(10)
@@ -59,6 +160,19 @@ class ExperimentManager(QWidget):
         experiment_name_layout.addWidget(self.experiment_name)
         self.layout.addLayout(experiment_name_layout)
 
+        # Data Directory
+        data_dir_layout = QHBoxLayout()
+        data_dir_label = QLabel("Data Directory:")
+        data_dir_label.setFixedWidth(120)
+        self.data_dir = widgets.FileEdit(
+            mode='d'
+        )
+        self.data_dir.changed.connect(self._update_config_paths)  # Connect to update config paths
+        self.data_dir.changed.connect(self._check_start_button_state)  # Connect to enable/disable button
+        data_dir_layout.addWidget(data_dir_label)
+        data_dir_layout.addWidget(self.data_dir.native)
+        self.layout.addLayout(data_dir_layout)
+
         # Config Template File
         config_template_layout = QHBoxLayout()
         config_template_label = QLabel("Config Template File:")
@@ -73,19 +187,6 @@ class ExperimentManager(QWidget):
         config_template_layout.addWidget(self.config_template.native)
         self.layout.addLayout(config_template_layout)
 
-        # Data Directory
-        data_dir_layout = QHBoxLayout()
-        data_dir_label = QLabel("Data Directory:")
-        data_dir_label.setFixedWidth(120)
-        self.data_dir = widgets.FileEdit(
-            mode='d'
-        )
-        self.data_dir.changed.connect(self._update_config_paths)  # Connect to update config paths
-        self.data_dir.changed.connect(self._check_start_button_state)  # Connect to enable/disable button
-        data_dir_layout.addWidget(data_dir_label)
-        data_dir_layout.addWidget(self.data_dir.native)
-        self.layout.addLayout(data_dir_layout)
-
         # Cores Input
         cores_layout = QHBoxLayout()
         cores_label = QLabel("Cores:")
@@ -97,6 +198,21 @@ class ExperimentManager(QWidget):
         cores_layout.addWidget(cores_label)
         cores_layout.addWidget(self.cores_input)
         self.layout.addLayout(cores_layout)
+
+        # === Segmentation Section ===
+        segmentation_header = QLabel("Segmentation Values")
+        segmentation_header.setAlignment(Qt.AlignCenter)  # Center align the text
+        segmentation_header.setStyleSheet("font-size: 14px; font-weight: bold;")
+        self.layout.addWidget(segmentation_header)
+
+        # Add segmentation container first
+        self.segmentation_container = SegmentationContainer(self)
+        self.layout.addWidget(self.segmentation_container.native)
+
+        # Add "Add Entry" button below the entries
+        add_button_container = widgets.Container(layout='horizontal')
+        add_button_container.extend([self.segmentation_container.add_button])
+        self.layout.addWidget(add_button_container.native)
 
         # Submit Button
         self.submit_button = QPushButton('New Experiment')
@@ -128,7 +244,10 @@ class ExperimentManager(QWidget):
 
         self.layout.addStretch()
 
-        self.current_config = None
+    def _update_config_from_segmentation(self):
+        """Update config with current segmentation values"""
+        if self.current_config:
+            self.current_config['segmentation_values'] = self.segmentation_container.get_values()
 
     def _update_experiment_names(self):
         """Update the experiment names dropdown based on the work directory"""
@@ -156,15 +275,28 @@ class ExperimentManager(QWidget):
         if file_path:
             try:
                 with open(file_path, 'r') as f:
-                    if USE_RUAMEL:
-                        self.current_config = yaml.load(f)  # Use ruamel.yaml to load
-                    else:
-                        self.current_config = yaml.safe_load(f)  # Fall back to PyYAML
+                    self.current_config = yaml.load(f)  # Use ruamel.yaml to load
+                self._load_config(file_path)
                 self._check_start_button_state()
             except Exception as e:
                 print(f"Error loading config: {e}")
                 self.current_config = None
                 self.submit_button.setEnabled(False)
+
+    def _load_config(self, file_path):
+        """Load config and initialize segmentation values"""
+        try:
+            with open(file_path, 'r') as f:
+                self.current_config = yaml.load(f)
+
+            # Initialize segmentation values if present
+            if self.current_config and 'segmentation_values' in self.current_config:
+                self.segmentation_container._set_values(self.current_config['segmentation_values'])
+
+        except Exception as e:
+            print(f"Error loading config: {e}")
+            self.current_config = None
+            self.submit_button.setEnabled(False)
 
     def _update_config_paths(self):
         """Update paths in the config when directories are selected"""
@@ -198,23 +330,18 @@ class ExperimentManager(QWidget):
 
             # Read the config template
             with open(config_template_path, 'r') as f:
-                if USE_RUAMEL:
-                    config_data = yaml.load(f)  # Use ruamel.yaml to load
-                else:
-                    config_data = yaml.safe_load(f)  # Fall back to PyYAML
+                config_data = yaml.load(f)  # Use ruamel.yaml to load
 
             # Update only the UNIVERSAL section
             config_data['data_dir'] = str(self.data_dir.value)
             config_data['work_dir'] = str(experiment_dir)
             config_data['exp_name'] = experiment_name  # Add experiment name to config
             config_data['cores'] = self.cores_input.value()  # Add cores to config
+            config_data['segmentation_values'] = self.segmentation_container.get_values()  # Add segmentation values to config
 
             # Save the modified config to the new location
             with open(new_config_path, 'w') as f:
-                if USE_RUAMEL:
-                    yaml.dump(config_data, f)  # Use ruamel.yaml to dump
-                else:
-                    yaml.safe_dump(config_data, f)  # Fall back to PyYAML
+                yaml.dump(config_data, f)  # Use ruamel.yaml to dump
 
             print(f"Created new experiment config at: {new_config_path}")
             self.current_config = config_data
