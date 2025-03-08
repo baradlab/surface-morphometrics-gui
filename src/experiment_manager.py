@@ -1,5 +1,4 @@
 from pathlib import Path
-import shutil
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QLabel, QFileDialog, QHBoxLayout, QComboBox, QMessageBox, QSpinBox
 )
@@ -8,18 +7,22 @@ from magicgui import widgets
 from ruamel.yaml import YAML
 import matplotlib.pyplot as plt
 import os
+import napari
+from napari.utils.colormaps import label_colormap
+
 
 yaml = YAML()
 USE_RUAMEL = True
 
 class SegmentationEntry(widgets.Container):
     """A single segmentation entry with label and value fields"""
-    def __init__(self, label='', value=1):
+    def __init__(self, label='', value=1, viewer=None):
         super().__init__(layout='horizontal')
+        self.viewer = viewer
         self.label_field = widgets.LineEdit(value=label, label='Label')
         self.value_field = widgets.SpinBox(value=value, label='Value')
         
-        # Add color indicator
+        # Add simple color indicator
         self.color_indicator = widgets.PushButton()
         self.color_indicator.min_width = 20
         self.color_indicator.max_width = 20
@@ -32,26 +35,68 @@ class SegmentationEntry(widgets.Container):
         # Connect value changes to color updates
         self.value_field.changed.connect(self._update_color)
 
+
     def _update_color(self):
         """Update the color indicator based on the value"""
-        cmap = plt.get_cmap('tab20')
-        color = cmap(self.value_field.value % 20)[:3]
-        hex_color = '#%02x%02x%02x' % tuple(int(255 * c) for c in color)
-        self.color_indicator.style = f"background-color: {hex_color}; border: none;"
+        try:
+            if not self.viewer:
+                return
+                
+            label_value = self.value_field.value
+            if label_value < 0:
+                return
+                
+            for layer in self.viewer.layers:
+                if isinstance(layer, napari.layers.Labels):
+                    try:
+                        color = layer.get_color(label_value)
+                        r, g, b = (int(c * 255) for c in color[:3])
+                        hex_color = f"#{r:02x}{g:02x}{b:02x}"
+                        self.color_indicator.native.setStyleSheet(
+                            f"background-color: {hex_color}; border: none; min-width: 20px; max-width: 20px;"
+                        )
+                        return
+                    except Exception:
+                        continue
+
+            self.color_indicator.native.setStyleSheet("background-color: #ffffff; border: none; min-width: 20px; max-width: 20px;")
+            
+        except Exception:
+            self.color_indicator.native.setStyleSheet("background-color: #ff0000; border: none; min-width: 20px; max-width: 20px;")
+
 
 class SegmentationContainer(widgets.Container):
     """Container for multiple segmentation entries"""
     def __init__(self, experiment_manager):
         super().__init__(layout='vertical')
-        self.entries = []
+        self._entries = []
         self.add_button = widgets.PushButton(text='Add Entry')
         self.add_button.clicked.connect(self._add_entry)
         self.extend([self.add_button])
         self.experiment_manager = experiment_manager
 
+    @property
+    def entries(self):
+        """Get list of current segmentation entries"""
+        return self._entries
+
+    @entries.setter
+    def entries(self, value):
+        self._entries = value
+
+    def _set_values(self, values: dict):
+        """Set segmentation values from dictionary"""
+        # Clear existing entries
+        while self.entries:
+            self._remove_entry(self.entries[0])
+        
+        # Add new entries
+        for label, value in values.items():
+            self._add_entry(label=label, value=value)
+
     def _add_entry(self, label='', value=1):
-        entry = SegmentationEntry(label=label, value=value)
-        entry.remove_button.clicked.connect(lambda: self._remove_entry(entry))
+        """Add a new segmentation entry"""
+        entry = SegmentationEntry(label=label, value=value, viewer=self.experiment_manager.viewer)
         self.entries.append(entry)
         self.insert(-1, entry)
 
@@ -67,56 +112,6 @@ class SegmentationContainer(widgets.Container):
             if entry.label_field.value.strip()  # Only include non-empty labels
         }
     
-    def _set_values(self, values: dict):
-        """Set segmentation values from dictionary"""
-        # Clear existing entries
-        while self.entries:
-            self._remove_entry(self.entries[0])
-        
-        # Add new entries
-        for label, value in values.items():
-            self._add_entry(label=label, value=value)
-
-    def save_entries(self):
-        """Save current segmentation entries to config.yml"""
-        from qtpy.QtWidgets import QMessageBox
-        import yaml
-        
-        # Create segmentation values dictionary
-        segmentation_values = {
-            entry.label_field.value: entry.value_field.value
-            for entry in self.entries
-        }
-
-        # Update config file directly
-        try:
-            # Read existing config
-            with open(self.experiment_manager.config_path, 'r') as f:
-                config = yaml.safe_load(f) or {}
-            
-            # Update segmentation values
-            config['segmentation_values'] = segmentation_values
-            
-            # Write updated config back to file
-            with open(self.experiment_manager.config_path, 'w') as f:
-                yaml.safe_dump(config, f, default_flow_style=False)
-                
-            # Show confirmation popup
-            msg = QMessageBox()
-            msg.setIcon(QMessageBox.Information)
-            msg.setText("Segmentation values have been saved to config.yml.")
-            msg.setWindowTitle("Save Successful")
-            msg.setStandardButtons(QMessageBox.Ok)
-            msg.exec_()
-            
-        except Exception as e:
-            # Show error popup
-            msg = QMessageBox()
-            msg.setIcon(QMessageBox.Critical)
-            msg.setText(f"Error saving segmentation values: {str(e)}")
-            msg.setWindowTitle("Save Failed")
-            msg.setStandardButtons(QMessageBox.Ok)
-            msg.exec_()
 
 class ExperimentManager(QWidget):
     def __init__(self, viewer):
@@ -165,6 +160,19 @@ class ExperimentManager(QWidget):
         experiment_name_layout.addWidget(self.experiment_name)
         self.layout.addLayout(experiment_name_layout)
 
+        # Data Directory
+        data_dir_layout = QHBoxLayout()
+        data_dir_label = QLabel("Data Directory:")
+        data_dir_label.setFixedWidth(120)
+        self.data_dir = widgets.FileEdit(
+            mode='d'
+        )
+        self.data_dir.changed.connect(self._update_config_paths)  # Connect to update config paths
+        self.data_dir.changed.connect(self._check_start_button_state)  # Connect to enable/disable button
+        data_dir_layout.addWidget(data_dir_label)
+        data_dir_layout.addWidget(self.data_dir.native)
+        self.layout.addLayout(data_dir_layout)
+
         # Config Template File
         config_template_layout = QHBoxLayout()
         config_template_label = QLabel("Config Template File:")
@@ -179,19 +187,6 @@ class ExperimentManager(QWidget):
         config_template_layout.addWidget(self.config_template.native)
         self.layout.addLayout(config_template_layout)
 
-        # Data Directory
-        data_dir_layout = QHBoxLayout()
-        data_dir_label = QLabel("Data Directory:")
-        data_dir_label.setFixedWidth(120)
-        self.data_dir = widgets.FileEdit(
-            mode='d'
-        )
-        self.data_dir.changed.connect(self._update_config_paths)  # Connect to update config paths
-        self.data_dir.changed.connect(self._check_start_button_state)  # Connect to enable/disable button
-        data_dir_layout.addWidget(data_dir_label)
-        data_dir_layout.addWidget(self.data_dir.native)
-        self.layout.addLayout(data_dir_layout)
-
         # Cores Input
         cores_layout = QHBoxLayout()
         cores_label = QLabel("Cores:")
@@ -203,6 +198,21 @@ class ExperimentManager(QWidget):
         cores_layout.addWidget(cores_label)
         cores_layout.addWidget(self.cores_input)
         self.layout.addLayout(cores_layout)
+
+        # === Segmentation Section ===
+        segmentation_header = QLabel("Segmentation Values")
+        segmentation_header.setAlignment(Qt.AlignCenter)  # Center align the text
+        segmentation_header.setStyleSheet("font-size: 14px; font-weight: bold;")
+        self.layout.addWidget(segmentation_header)
+
+        # Add segmentation container first
+        self.segmentation_container = SegmentationContainer(self)
+        self.layout.addWidget(self.segmentation_container.native)
+
+        # Add "Add Entry" button below the entries
+        add_button_container = widgets.Container(layout='horizontal')
+        add_button_container.extend([self.segmentation_container.add_button])
+        self.layout.addWidget(add_button_container.native)
 
         # Submit Button
         self.submit_button = QPushButton('New Experiment')
@@ -232,36 +242,7 @@ class ExperimentManager(QWidget):
         button_layout.addStretch()
         self.layout.addLayout(button_layout)
 
-        # Add segmentation section after Start New Experiment section
-        self._setup_segmentation_ui()
-
         self.layout.addStretch()
-
-    def _setup_segmentation_ui(self):
-        """Setup segmentation label management UI"""
-        # Add segmentation section header
-        segmentation_header = QLabel("Segmentation Values")
-        segmentation_header.setAlignment(Qt.AlignCenter)
-        segmentation_header.setStyleSheet("font-size: 14px; font-weight: bold;")
-        self.layout.addWidget(segmentation_header)
-
-        # Create container for buttons
-        button_container = widgets.Container(layout='horizontal')
-        self.segmentation_container = SegmentationContainer(self)
-
-        # Add Save Entries button
-        save_button = widgets.PushButton(text='Save Entries')
-        save_button.clicked.connect(self.segmentation_container.save_entries)
-        button_container.extend([self.segmentation_container.add_button, save_button])
-
-        # Add widgets to layout
-        self.layout.addWidget(button_container.native)
-        self.layout.addWidget(self.segmentation_container.native)
-
-        # Connect segmentation changes to config updates
-        for entry in self.segmentation_container.entries:
-            entry.label_field.changed.connect(self._update_config_from_segmentation)
-            entry.value_field.changed.connect(self._update_config_from_segmentation)
 
     def _update_config_from_segmentation(self):
         """Update config with current segmentation values"""

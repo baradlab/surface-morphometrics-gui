@@ -16,16 +16,9 @@ class TomoslicePlugin:
         self.viewer = viewer
         self.experiment_manager = experiment_manager
         self.current_layer = None
-        self.segmentation_colors = {}
         
         # Connect to experiment manager's data directory widget
         self.experiment_manager.data_dir.changed.connect(self._on_data_dir_changed)
-
-        # Connect to experiment manager's segmentation updates
-        self.experiment_manager.segmentation_container.add_button.clicked.connect(self._update_colors)
-        for entry in self.experiment_manager.segmentation_container.entries:
-            entry.label_field.changed.connect(self._update_colors)
-            entry.value_field.changed.connect(self._update_colors)
 
         # Setup tooltip
         self.setup_tooltip()
@@ -77,11 +70,7 @@ class TomoslicePlugin:
             # Convert data to integer type for segmentation
             data = data.astype(np.int32)
             
-            # Get unique values and generate colors
-            unique_values = np.unique(data)
-            num_segments = len(unique_values)
-            
-            # napari will handle color cycling automatically
+            # Add layer with default napari colors
             self.current_layer = self.viewer.add_labels(
                 data,
                 name=file_path.stem,
@@ -102,18 +91,6 @@ class TomoslicePlugin:
                 return label
         return None
 
-    def _update_colors(self):
-        """Update color mapping based on current segmentation values"""
-        if self.current_layer:
-            values = self.experiment_manager.segmentation_container.get_values()
-            self.segmentation_colors = {val: self._generate_color(i) for i, val in enumerate(values.values())}
-            self.current_layer.color = self.segmentation_colors
-
-    def _generate_color(self, index):
-        """Generate a unique color for each segmentation value"""
-        import matplotlib.pyplot as plt
-        cmap = plt.get_cmap('tab20')
-        return cmap(index % 20)[:3]  # Return RGB only
 
     def _on_data_dir_changed(self, path: str) -> None:
         """Handle data directory changes"""
@@ -125,7 +102,6 @@ class TomoslicePlugin:
         
         if supported_file:
             self._load_tomogram(supported_file)
-            self._update_colors()  # Set initial colors
         else:
             logging.warning(f"No supported files found in {path}")
             if self.current_layer and self.current_layer in self.viewer.layers:
