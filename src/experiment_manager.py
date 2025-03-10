@@ -1,6 +1,6 @@
 from pathlib import Path
 from qtpy.QtWidgets import (
-    QWidget, QVBoxLayout, QPushButton, QLabel, QFileDialog, QHBoxLayout, QComboBox, QMessageBox, QSpinBox
+    QWidget, QVBoxLayout, QPushButton, QLabel, QFileDialog, QHBoxLayout, QComboBox, QMessageBox, QSpinBox, QDialog
 )
 from qtpy.QtCore import Qt
 from magicgui import widgets
@@ -8,10 +8,8 @@ from ruamel.yaml import YAML
 import matplotlib.pyplot as plt
 import os
 import napari
-from napari.utils.colormaps import label_colormap
 
 
-yaml = YAML()
 USE_RUAMEL = True
 
 class SegmentationEntry(widgets.Container):
@@ -19,10 +17,16 @@ class SegmentationEntry(widgets.Container):
     def __init__(self, label='', value=1, viewer=None):
         super().__init__(layout='horizontal')
         self.viewer = viewer
-        self.label_field = widgets.LineEdit(value=label, label='Label')
-        self.value_field = widgets.SpinBox(value=value, label='Value')
         
-        # Add simple color indicator
+        # Label implementation
+        self.label_field = widgets.LineEdit(value=label)
+        self.label_field.native.setReadOnly(True)
+        self.label_field.native.setFocusPolicy(Qt.NoFocus)
+        
+        # Value field
+        self.value_field = widgets.SpinBox(value=value)
+        
+        # Color indicator with initialization
         self.color_indicator = widgets.PushButton()
         self.color_indicator.min_width = 20
         self.color_indicator.max_width = 20
@@ -34,35 +38,34 @@ class SegmentationEntry(widgets.Container):
 
         # Connect value changes to color updates
         self.value_field.changed.connect(self._update_color)
+        
+        # Prevent creating new windows
+        self.native.setWindowFlags(Qt.Widget)
 
 
     def _update_color(self):
         """Update the color indicator based on the value"""
-        try:
-            if not self.viewer:
-                return
+        if not self.viewer:
+            return
                 
-            label_value = self.value_field.value
-            if label_value < 0:
-                return
+        label_value = self.value_field.value
+        if label_value < 0:
+            return
                 
-            for layer in self.viewer.layers:
-                if isinstance(layer, napari.layers.Labels):
-                    try:
-                        color = layer.get_color(label_value)
-                        r, g, b = (int(c * 255) for c in color[:3])
-                        hex_color = f"#{r:02x}{g:02x}{b:02x}"
-                        self.color_indicator.native.setStyleSheet(
-                            f"background-color: {hex_color}; border: none; min-width: 20px; max-width: 20px;"
-                        )
-                        return
-                    except Exception:
-                        continue
+        for layer in self.viewer.layers:
+            if isinstance(layer, napari.layers.Labels):
+                try:
+                    color = layer.get_color(label_value)
+                    r, g, b = (int(c * 255) for c in color[:3])
+                    hex_color = f"#{r:02x}{g:02x}{b:02x}"
+                    self.color_indicator.native.setStyleSheet(
+                        f"background-color: {hex_color}; border: none; min-width: 20px; max-width: 20px;"
+                    )
+                    return
+                except Exception:
+                    continue
 
-            self.color_indicator.native.setStyleSheet("background-color: #ffffff; border: none; min-width: 20px; max-width: 20px;")
-            
-        except Exception:
-            self.color_indicator.native.setStyleSheet("background-color: #ff0000; border: none; min-width: 20px; max-width: 20px;")
+        self.color_indicator.native.setStyleSheet("background-color: #ffffff; border: none; min-width: 20px; max-width: 20px;")
 
 
 class SegmentationContainer(widgets.Container):
@@ -74,6 +77,8 @@ class SegmentationContainer(widgets.Container):
         self.add_button.clicked.connect(self._add_entry)
         self.extend([self.add_button])
         self.experiment_manager = experiment_manager
+        # Prevent creating new windows
+        self.native.setWindowFlags(Qt.Widget)
 
     @property
     def entries(self):
@@ -86,17 +91,28 @@ class SegmentationContainer(widgets.Container):
 
     def _set_values(self, values: dict):
         """Set segmentation values from dictionary"""
-        # Clear existing entries
-        while self.entries:
-            self._remove_entry(self.entries[0])
+        # Update existing entries first
+        existing_entries = {entry.label_field.value: entry for entry in self.entries}
         
-        # Add new entries
         for label, value in values.items():
-            self._add_entry(label=label, value=value)
+            if label in existing_entries:
+                # Update existing entry
+                entry = existing_entries[label]
+                entry.value_field.value = value
+                entry._update_color()
+            else:
+                # Add new entry only if it doesn't exist
+                self._add_entry(label=label, value=value)
+        
+        # Remove entries that are no longer needed
+        for entry in list(self.entries):
+            if entry.label_field.value not in values:
+                self._remove_entry(entry)
 
     def _add_entry(self, label='', value=1):
         """Add a new segmentation entry"""
         entry = SegmentationEntry(label=label, value=value, viewer=self.experiment_manager.viewer)
+        entry.remove_button.clicked.connect(lambda: self._remove_entry(entry))
         self.entries.append(entry)
         self.insert(-1, entry)
 
@@ -155,6 +171,7 @@ class ExperimentManager(QWidget):
         self.experiment_name = QComboBox()
         self.experiment_name.setEditable(True)  # Allow typing new names
         self.experiment_name.setPlaceholderText("Enter or select an experiment name")
+        self.experiment_name.currentTextChanged.connect(self._on_experiment_selected)  # Connect to handle selection
         self.experiment_name.currentTextChanged.connect(self._check_start_button_state)  # Connect to enable/disable button
         experiment_name_layout.addWidget(experiment_name_label)
         experiment_name_layout.addWidget(self.experiment_name)
@@ -250,14 +267,52 @@ class ExperimentManager(QWidget):
             self.current_config['segmentation_values'] = self.segmentation_container.get_values()
 
     def _update_experiment_names(self):
-        """Update the experiment names dropdown based on the work directory"""
-        if self.work_dir.value:
-            work_dir_path = Path(self.work_dir.value)
-            if work_dir_path.exists():
-                # Get all subdirectories in the work directory
-                experiment_names = [dir.name for dir in work_dir_path.iterdir() if dir.is_dir()]
-                self.experiment_name.clear()  # Clear existing items
-                self.experiment_name.addItems(experiment_names)  # Add new items
+        """Populate experiment names from work directory"""
+        self.experiment_name.clear()
+        
+        if not self.work_dir.value:
+            return
+            
+        work_dir = Path(self.work_dir.value)
+        
+        if not work_dir.exists():
+            return
+        
+        existing_experiments = [
+            d.name for d in work_dir.iterdir() 
+            if d.is_dir() and list(d.glob('*_config.yml'))
+        ]
+        
+        if existing_experiments:
+            self.experiment_name.addItems(existing_experiments)
+
+    def _on_experiment_selected(self, name):
+        if name:
+            self.experiment_name.setCurrentText(name)
+            self.experiment_name.lineEdit().setText(name)
+            
+            # Config loading with proper population
+            work_dir = Path(self.work_dir.value)
+            exp_dir = work_dir / name
+            
+            if exp_dir.exists():
+                config_files = list(exp_dir.glob('*_config.yml'))
+                if config_files:
+                    yaml = YAML(typ='safe')
+                    with open(config_files[0]) as f:
+                        config = yaml.load(f)
+                    
+                    # Populate all fields from config
+                    self.data_dir.value = str(config.get('data_dir', exp_dir/'data'))
+                    self.config_template.value = str(config_files[0])
+                    self.cores_input.setValue(config.get('cores', 14))
+                    
+                    # Update segmentation values
+                    if 'segmentation_values' in config:
+                        self.segmentation_container._set_values(config['segmentation_values'])
+                    
+                    self.submit_button.setText('Resume Experiment')
+                    self._check_start_button_state()
 
     def _check_start_button_state(self):
         """Enable start button only when all required fields are filled"""
@@ -271,32 +326,23 @@ class ExperimentManager(QWidget):
         )
 
     def _handle_config_template_selection(self, file_path):
-        """Handle config template file selection with error handling"""
+        """Handle config template file selection"""
         if file_path:
-            try:
-                with open(file_path, 'r') as f:
-                    self.current_config = yaml.load(f)  # Use ruamel.yaml to load
-                self._load_config(file_path)
-                self._check_start_button_state()
-            except Exception as e:
-                print(f"Error loading config: {e}")
-                self.current_config = None
-                self.submit_button.setEnabled(False)
+            yaml = YAML(typ='safe')
+            with open(file_path, 'r') as f:
+                self.current_config = yaml.load(f)
+            self._load_config(file_path)
+            self._check_start_button_state()
 
     def _load_config(self, file_path):
         """Load config and initialize segmentation values"""
-        try:
-            with open(file_path, 'r') as f:
-                self.current_config = yaml.load(f)
+        yaml = YAML(typ='safe')
+        with open(file_path, 'r') as f:
+            self.current_config = yaml.load(f)
 
-            # Initialize segmentation values if present
-            if self.current_config and 'segmentation_values' in self.current_config:
-                self.segmentation_container._set_values(self.current_config['segmentation_values'])
-
-        except Exception as e:
-            print(f"Error loading config: {e}")
-            self.current_config = None
-            self.submit_button.setEnabled(False)
+        # Initialize segmentation values if present
+        if self.current_config and 'segmentation_values' in self.current_config:
+            self.segmentation_container._set_values(self.current_config['segmentation_values'])
 
     def _update_config_paths(self):
         """Update paths in the config when directories are selected"""
@@ -309,6 +355,118 @@ class ExperimentManager(QWidget):
             self._check_start_button_state()
 
     def _create_experiment(self):
+        """Handle both new experiment creation and resuming"""
+        if self.submit_button.text() == 'Resume Experiment':
+            self._confirm_resume()
+        else:
+            self._create_new_experiment()
+
+    def _confirm_resume(self):
+        """Show resume confirmation dialog"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Confirm Resume')
+        dialog.setFixedWidth(400)
+        
+        layout = QVBoxLayout()
+        dialog.setLayout(layout)
+        
+        # Header
+        header = QLabel('Confirm Resume')
+        header.setAlignment(Qt.AlignCenter)
+        header.setStyleSheet('font-size: 16px; font-weight: bold;')
+        layout.addWidget(header)
+        
+        # Warning message
+        warning = QLabel('Resuming will use existing files and may overwrite data!')
+        warning.setAlignment(Qt.AlignCenter)
+        layout.addWidget(warning)
+        
+        # Button layout
+        button_layout = QHBoxLayout()
+        
+        # OK button
+        ok_button = QPushButton('Resume')
+        ok_button.setFixedWidth(100)
+        ok_button.setStyleSheet(
+            """
+            QPushButton {
+                padding: 8px;
+                background-color: #7f7f7f;
+                color: black;
+                border: none;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #A0A0A0;
+            }
+            """
+        )
+        ok_button.clicked.connect(lambda: self._handle_resume_confirmation(dialog, True))
+        
+        # Cancel button
+        cancel_button = QPushButton('Cancel')
+        cancel_button.setFixedWidth(100)
+        cancel_button.setStyleSheet(
+            """
+            QPushButton {
+                padding: 8px;
+                background-color: #7f7f7f;
+                color: black;
+                border: none;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #A0A0A0;
+            }
+            """
+        )
+        cancel_button.clicked.connect(lambda: self._handle_resume_confirmation(dialog, False))
+        
+        button_layout.addStretch()
+        button_layout.addWidget(ok_button)
+        button_layout.addWidget(cancel_button)
+        button_layout.addStretch()
+        layout.addLayout(button_layout)
+        
+        dialog.exec_()
+    
+    def _handle_resume_confirmation(self, dialog, confirmed):
+        """Handle resume confirmation result"""
+        dialog.close()
+        if confirmed:
+            self._resume_experiment()
+
+    def _resume_experiment(self):
+        """Resume existing experiment"""
+        try:
+            # Validate existing files
+            exp_dir = Path(self.work_dir.value) / self.experiment_name.currentText()
+            if not exp_dir.exists():
+                raise FileNotFoundError(f'Experiment directory {exp_dir} not found')
+            
+            config_path = exp_dir / 'config.yml'
+            if not config_path.exists():
+                raise FileNotFoundError(f'Config file {config_path} not found')
+            
+            # Load existing config
+            yaml = YAML(typ='safe')
+            with open(config_path) as f:
+                self.current_config = yaml.load(f)
+            
+            # Update UI state
+            self._update_ui_from_config()
+            
+            # Notify plugins
+            if hasattr(self, 'tomoslice_plugin'):
+                self.tomoslice_plugin.update_directories()
+            
+            QMessageBox.information(self, 'Experiment Resumed', 
+                                   'Successfully resumed existing experiment!')
+        except Exception as e:
+            QMessageBox.critical(self, 'Resume Error',
+                                f'Failed to resume experiment: {str(e)}')
+
+    def _create_new_experiment(self):
         """Create a new experiment by copying config template and setting up directories"""
         if not all([
             self.work_dir.value,
@@ -329,8 +487,9 @@ class ExperimentManager(QWidget):
             new_config_path = experiment_dir / f"{experiment_name}_config.yml"
 
             # Read the config template
+            yaml = YAML(typ='safe')
             with open(config_template_path, 'r') as f:
-                config_data = yaml.load(f)  # Use ruamel.yaml to load
+                config_data = yaml.load(f)
 
             # Update only the UNIVERSAL section
             config_data['data_dir'] = str(self.data_dir.value)
@@ -341,10 +500,7 @@ class ExperimentManager(QWidget):
 
             # Save the modified config to the new location
             with open(new_config_path, 'w') as f:
-                yaml.dump(config_data, f)  # Use ruamel.yaml to dump
-
-            print(f"Created new experiment config at: {new_config_path}")
-            self.current_config = config_data
+                yaml.dump(config_data, f)
 
             QMessageBox.information(
                 self,
@@ -358,3 +514,12 @@ class ExperimentManager(QWidget):
                 "Error",
                 f"Failed to create experiment: {str(e)}"
             )
+
+    def _update_ui_from_config(self):
+        """Update UI state from loaded config"""
+        if self.current_config:
+            self.work_dir.value = self.current_config['work_dir']
+            self.data_dir.value = self.current_config['data_dir']
+            self.config_template.value = self.current_config['config_template']
+            self.cores_input.setValue(self.current_config['cores'])
+            self.segmentation_container._set_values(self.current_config['segmentation_values'])
