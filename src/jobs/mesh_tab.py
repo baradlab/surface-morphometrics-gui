@@ -8,11 +8,13 @@ class MeshGenerationWidget(widgets.Container):
         
         # Create header container
         header = widgets.Container(widgets=[
-            widgets.Label(value='Surface Generation Settings')
+            widgets.Label(value='<b>Surface Generation Settings</b>')
         ], layout='vertical')
         
         # Create settings container
         settings = widgets.Container(layout='vertical', labels=True)
+        settings.native.layout().setSpacing(5)
+        settings.native.layout().setContentsMargins(3, 3, 3, 3)
         
         # Create settings widgets
         self.angstroms = widgets.CheckBox(value=False, label='Angstrom Scaling')

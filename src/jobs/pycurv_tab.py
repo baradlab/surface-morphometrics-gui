@@ -8,13 +8,13 @@ class PyCurvWidget(widgets.Container):
         
         # Create header container
         header = widgets.Container(widgets=[
-            widgets.Label(value='Curvature Measurement Settings')
+            widgets.Label(value='<b>Curvature Measurement Settings</b>')
         ], layout='vertical')
         
         # Create settings container with minimal spacing
         settings = widgets.Container(layout='vertical', labels=True)
-        settings.native.layout().setSpacing(2)
-        settings.native.layout().setContentsMargins(2, 2, 2, 2)
+        settings.native.layout().setSpacing(5)
+        settings.native.layout().setContentsMargins(3, 3, 3, 3)
         
         # Create settings widgets
         self.radius_hit = widgets.SpinBox(value=8, min=1, max=20, label='Radius Hit')

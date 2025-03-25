@@ -4,44 +4,45 @@ from morphometrics_config import IntraListEditor, InterDictEditor
 class DistanceOrientationWidget(widgets.Container):
     """Widget for distance and orientation measurement settings"""
     
-    def __init__(self):
+    def __init__(self, viewer):
         super().__init__(layout='vertical', labels=True)
+        self.viewer = viewer
         
-        # Create header container
+        # Header container
         header = widgets.Container(widgets=[
-            widgets.Label(value='Distance and Orientation Measurements')
+            widgets.Label(value='<b>Distance and Orientation Measurements</b>')
         ], layout='vertical')
         
-        # Create settings container with minimal spacing
+        # Settings container with reduced spacing
         settings = widgets.Container(layout='vertical', labels=True)
-        settings.native.layout().setSpacing(2)
-        settings.native.layout().setContentsMargins(2, 2, 2, 2)
+        settings.native.layout().setSpacing(5)
+        settings.native.layout().setContentsMargins(3, 3, 3, 3)
         
-        # Create settings widgets
+        # Settings widgets
         self.min_dist = widgets.SpinBox(value=3, min=0, max=1000, label='Min Distance')
         self.max_dist = widgets.SpinBox(value=400, min=0, max=1000, label='Max Distance')
         self.tolerance = widgets.FloatSpinBox(value=0.1, min=0.0, max=1.0, step=0.01, label='Tolerance')
         self.verticality = widgets.CheckBox(value=True, label='Measure Verticality')
         self.relative_orientation = widgets.CheckBox(value=True, label='Measure Relative Orientation')
         
-        # Create intra and inter measurement editors
+        # Intra and Inter measurement editors
         self.intra_editor = IntraListEditor()
         self.inter_editor = InterDictEditor()
         
-        # Add settings to container
+        # Add settings to container with spacing
         settings.extend([
             self.min_dist,
             self.max_dist,
             self.tolerance,
             self.verticality,
             self.relative_orientation,
-            widgets.Label(value='Intra Membrane Measurements:'),
+            widgets.Label(value='<b>Intra Membrane Measurements:</b>'),
             self.intra_editor,
-            widgets.Label(value='Inter-membrane Measurements:'),
+            widgets.Label(value='<b>Inter-membrane Measurements:</b>'),
             self.inter_editor
         ])
         
-        # Create submit button
+        # Submit button
         self.submit_btn = widgets.PushButton(text='Run Distance/Orientation Analysis')
         self.submit_btn.clicked.connect(self._run_job)
         
@@ -51,6 +52,7 @@ class DistanceOrientationWidget(widgets.Container):
             settings,
             self.submit_btn
         ])
+        
             
     def _run_job(self):
         """Run distance/orientation analysis"""
