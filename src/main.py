@@ -2,8 +2,9 @@ import napari
 from magicgui import magicgui, widgets
 from qtpy.QtWidgets import QScrollArea, QTabWidget, QVBoxLayout, QWidget
 
-from morphometrics_config import ConfigEditor
-from jobs.seg_to_mesh import SegToMeshSubmissionWidget
+from jobs.mesh_tab import MeshGenerationWidget
+from jobs.pycurv_tab import PyCurvWidget
+from jobs.distance_tab import DistanceOrientationWidget
 from plugins.tomoslice_plugin import TomoslicePlugin
 from experiment_manager import ExperimentManager
 
@@ -20,9 +21,10 @@ def main():
         tabs = QTabWidget()
         
         # Create widgets
-        config_editor = ConfigEditor()
         experiment_manager = ExperimentManager(viewer)
-        job_widget = SegToMeshSubmissionWidget(config_editor)
+        mesh_widget = MeshGenerationWidget()
+        pycurv_widget = PyCurvWidget()
+        distance_widget = DistanceOrientationWidget()
         
         # Create tomoslice plugin
         tomoslice = TomoslicePlugin(viewer, experiment_manager)
@@ -32,18 +34,23 @@ def main():
         experiment_scroll.setWidget(experiment_manager)
         experiment_scroll.setWidgetResizable(True)
         
-        config_scroll = QScrollArea()
-        config_scroll.setWidget(config_editor.native)
-        config_scroll.setWidgetResizable(True)
+        mesh_scroll = QScrollArea()
+        mesh_scroll.setWidget(mesh_widget.native)
+        mesh_scroll.setWidgetResizable(True)
         
-        job_scroll = QScrollArea()
-        job_scroll.setWidget(job_widget.native)
-        job_scroll.setWidgetResizable(True)
+        pycurv_scroll = QScrollArea()
+        pycurv_scroll.setWidget(pycurv_widget.native)
+        pycurv_scroll.setWidgetResizable(True)
+        
+        distance_scroll = QScrollArea()
+        distance_scroll.setWidget(distance_widget.native)
+        distance_scroll.setWidgetResizable(True)
         
         # Add tabs
         tabs.addTab(experiment_scroll, "Experiment")
-        tabs.addTab(config_scroll, "Configuration")
-        tabs.addTab(job_scroll, "Segmentation to Mesh")
+        tabs.addTab(mesh_scroll, "Surface Generation")
+        tabs.addTab(pycurv_scroll, "Curvature Analysis")
+        tabs.addTab(distance_scroll, "Distance/Orientation")
         
         # Add tabs to layout
         layout.addWidget(tabs)
