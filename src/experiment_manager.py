@@ -1,6 +1,6 @@
 from pathlib import Path
 from qtpy.QtWidgets import (
-    QWidget, QVBoxLayout, QPushButton, QLabel, QFileDialog, QHBoxLayout, QComboBox, QMessageBox, QSpinBox, QDialog
+    QWidget, QVBoxLayout, QPushButton, QLabel, QHBoxLayout, QComboBox, QMessageBox, QSpinBox, QDialog
 )
 from qtpy.QtCore import Qt
 from magicgui import widgets
@@ -8,6 +8,7 @@ from ruamel.yaml import YAML
 import matplotlib.pyplot as plt
 import os
 import napari
+
 
 
 USE_RUAMEL = True
@@ -169,10 +170,13 @@ class ExperimentManager(QWidget):
         experiment_name_label = QLabel("Experiment Name:")
         experiment_name_label.setFixedWidth(120)
         self.experiment_name = QComboBox()
-        self.experiment_name.setEditable(True)  # Allow typing new names
+        self.experiment_name.setEditable(True)
+        self.experiment_name.setInsertPolicy(QComboBox.NoInsert)
         self.experiment_name.setPlaceholderText("Enter or select an experiment name")
-        self.experiment_name.currentTextChanged.connect(self._on_experiment_selected)  # Connect to handle selection
-        self.experiment_name.currentTextChanged.connect(self._check_start_button_state)  # Connect to enable/disable button
+        self.experiment_name.setCompleter(None)
+        self.experiment_name.currentIndexChanged.connect(self._on_experiment_selected)
+        self.experiment_name.editTextChanged.connect(self.filter_experiments)
+        self.experiment_name.editTextChanged.connect(self._check_start_button_state)
         experiment_name_layout.addWidget(experiment_name_label)
         experiment_name_layout.addWidget(self.experiment_name)
         self.layout.addLayout(experiment_name_layout)
@@ -286,33 +290,26 @@ class ExperimentManager(QWidget):
         if existing_experiments:
             self.experiment_name.addItems(existing_experiments)
 
-    def _on_experiment_selected(self, name):
-        if name:
-            self.experiment_name.setCurrentText(name)
-            self.experiment_name.lineEdit().setText(name)
+    def _on_experiment_selected(self):
+        """Handle explicit experiment selection"""
+        # Only update fields if this is a valid selection
+        if self.experiment_name.currentIndex() >= 0:
+            # Clear fields first
+            self._clear_experiment_fields()
             
-            # Config loading with proper population
-            work_dir = Path(self.work_dir.value)
-            exp_dir = work_dir / name
+            # Update button text
+            self.submit_button.setText('Resume Experiment')
             
-            if exp_dir.exists():
-                config_files = list(exp_dir.glob('*_config.yml'))
-                if config_files:
-                    yaml = YAML(typ='safe')
-                    with open(config_files[0]) as f:
-                        config = yaml.load(f)
-                    
-                    # Populate all fields from config
-                    self.data_dir.value = str(config.get('data_dir', exp_dir/'data'))
-                    self.config_template.value = str(config_files[0])
-                    self.cores_input.setValue(config.get('cores', 14))
-                    
-                    # Update segmentation values
-                    if 'segmentation_values' in config:
-                        self.segmentation_container._set_values(config['segmentation_values'])
-                    
-                    self.submit_button.setText('Resume Experiment')
-                    self._check_start_button_state()
+            # Enable/disable button based on state
+            self._check_start_button_state()
+            
+            # Keep focus in the text box
+            self.experiment_name.lineEdit().setFocus()
+        else:
+            # Clear fields if typing a new name
+            self._clear_experiment_fields()
+            self.submit_button.setText('Start New Experiment')
+
 
     def _check_start_button_state(self):
         """Enable start button only when all required fields are filled"""
@@ -327,12 +324,18 @@ class ExperimentManager(QWidget):
 
     def _handle_config_template_selection(self, file_path):
         """Handle config template file selection"""
-        if file_path:
+        if file_path and file_path.is_file() and file_path.suffix in ('.yml', '.yaml'):
             yaml = YAML(typ='safe')
-            with open(file_path, 'r') as f:
-                self.current_config = yaml.load(f)
-            self._load_config(file_path)
-            self._check_start_button_state()
+            try:
+                with open(file_path, 'r') as f:
+                    self.current_config = yaml.load(f)
+                self._load_config(file_path)
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    "Error Loading Config",
+                    f"Failed to load config file: {str(e)}"
+                )
 
     def _load_config(self, file_path):
         """Load config and initialize segmentation values"""
@@ -487,7 +490,8 @@ class ExperimentManager(QWidget):
             new_config_path = experiment_dir / f"{experiment_name}_config.yml"
 
             # Read the config template
-            yaml = YAML(typ='safe')
+            yaml = YAML()
+            yaml.preserve_quotes = True
             with open(config_template_path, 'r') as f:
                 config_data = yaml.load(f)
 
@@ -523,3 +527,39 @@ class ExperimentManager(QWidget):
             self.config_template.value = self.current_config['config_template']
             self.cores_input.setValue(self.current_config['cores'])
             self.segmentation_container._set_values(self.current_config['segmentation_values'])
+
+    def _clear_experiment_fields(self):
+        """Clear experiment fields when typing a new name"""
+        self.data_dir.value = ''
+        self.config_template.value = ''
+        self.cores_input.setValue(1)
+        self.segmentation_container._set_values({})
+        self.submit_button.setText('Start New Experiment')
+
+    def filter_experiments(self, text):
+        """Filter experiment names based on the text"""
+        # Block signals during filtering
+        self.experiment_name.blockSignals(True)
+        
+        # Get the combo box view
+        view = self.experiment_name.view()
+        
+        # Show popup with filtered items
+        self.experiment_name.showPopup()
+        
+        # Hide non-matching items
+        for i in range(self.experiment_name.count()):
+            item_text = self.experiment_name.itemText(i)
+            view.setRowHidden(i, not item_text.lower().startswith(text.lower()))
+        
+        # Restore signals
+        self.experiment_name.blockSignals(False)
+        
+        # Keep focus in the text box
+        line_edit = self.experiment_name.lineEdit()
+        line_edit.setFocus()
+        line_edit.deselect()
+        line_edit.setCursorPosition(len(text))
+        line_edit.grabKeyboard()
+
+        
