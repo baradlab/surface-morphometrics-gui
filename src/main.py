@@ -16,10 +16,9 @@ def main():
         
         # Create widgets
         experiment_manager = ExperimentManager(viewer)
-        mesh_widget = MeshGenerationWidget()
+        mesh_widget = MeshGenerationWidget(experiment_manager)
         pycurv_widget = PyCurvWidget()
         distance_widget = DistanceOrientationWidget(viewer)
-        
         # Create tomoslice plugin
         tomoslice = TomoslicePlugin(viewer, experiment_manager)
         

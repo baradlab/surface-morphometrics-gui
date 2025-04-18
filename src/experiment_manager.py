@@ -1,17 +1,14 @@
 from pathlib import Path
 from qtpy.QtWidgets import (
-    QWidget, QVBoxLayout, QPushButton, QLabel, QHBoxLayout, QComboBox, QMessageBox, QSpinBox, QDialog
+    QWidget, QVBoxLayout, QPushButton, QLabel, QHBoxLayout, QComboBox, QMessageBox, QSpinBox, QDialog, 
+    QCompleter
 )
-from qtpy.QtCore import Qt
+from qtpy.QtCore import Qt, QTimer, QStringListModel, Signal
 from magicgui import widgets
 from ruamel.yaml import YAML
 import matplotlib.pyplot as plt
 import os
 import napari
-
-
-
-USE_RUAMEL = True
 
 class SegmentationEntry(widgets.Container):
     """A single segmentation entry with label and value fields"""
@@ -91,23 +88,29 @@ class SegmentationContainer(widgets.Container):
         self._entries = value
 
     def _set_values(self, values: dict):
+
         """Set segmentation values from dictionary"""
         # Update existing entries first
         existing_entries = {entry.label_field.value: entry for entry in self.entries}
+
         
         for label, value in values.items():
+
             if label in existing_entries:
+
                 # Update existing entry
                 entry = existing_entries[label]
                 entry.value_field.value = value
                 entry._update_color()
             else:
+
                 # Add new entry only if it doesn't exist
                 self._add_entry(label=label, value=value)
         
         # Remove entries that are no longer needed
         for entry in list(self.entries):
             if entry.label_field.value not in values:
+
                 self._remove_entry(entry)
 
     def _add_entry(self, label='', value=1):
@@ -131,6 +134,7 @@ class SegmentationContainer(widgets.Container):
     
 
 class ExperimentManager(QWidget):
+    config_loaded = Signal()
     def __init__(self, viewer):
         super().__init__()
         self.viewer = viewer
@@ -165,7 +169,7 @@ class ExperimentManager(QWidget):
         work_dir_layout.addWidget(self.work_dir.native)
         self.layout.addLayout(work_dir_layout)
 
-        # Experiment Name
+        # Experiment Name with proper completer setup
         experiment_name_layout = QHBoxLayout()
         experiment_name_label = QLabel("Experiment Name:")
         experiment_name_label.setFixedWidth(120)
@@ -173,9 +177,11 @@ class ExperimentManager(QWidget):
         self.experiment_name.setEditable(True)
         self.experiment_name.setInsertPolicy(QComboBox.NoInsert)
         self.experiment_name.setPlaceholderText("Enter or select an experiment name")
-        self.experiment_name.setCompleter(None)
+        
+        # Setup the completer for filtering
+        self.setup_experiment_completer()
+        
         self.experiment_name.currentIndexChanged.connect(self._on_experiment_selected)
-        self.experiment_name.editTextChanged.connect(self.filter_experiments)
         self.experiment_name.editTextChanged.connect(self._check_start_button_state)
         experiment_name_layout.addWidget(experiment_name_label)
         experiment_name_layout.addWidget(self.experiment_name)
@@ -265,6 +271,49 @@ class ExperimentManager(QWidget):
 
         self.layout.addStretch()
 
+    def setup_experiment_completer(self):
+        """Set up the experiment name completer for better filtering"""
+        # Create model for the completer
+        self.completer_model = QStringListModel()
+        self.all_experiment_names = []
+        
+        # Create completer
+        self.completer = QCompleter()
+        self.completer.setModel(self.completer_model)
+        self.completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self.completer.setFilterMode(Qt.MatchStartsWith)
+        self.completer.setCompletionMode(QCompleter.PopupCompletion)
+        
+        # Set completer on combobox
+        self.experiment_name.setCompleter(self.completer)
+        
+        # Connect to update filter on text changes
+        self.experiment_name.lineEdit().textChanged.connect(self.filter_experiments)
+
+    def filter_experiments(self, text):
+        """Filter experiment names based on the text"""
+        if not text:
+            # If empty, show all items but don't show popup
+            self.completer_model.setStringList(self.all_experiment_names)
+            return
+            
+        # Filter to only matching items
+        matching_items = [name for name in self.all_experiment_names 
+                         if text.lower() in name.lower()]
+        
+        # Update completer model with filtered items
+        self.completer_model.setStringList(matching_items)
+        
+        # Show popup with filtered options if we have matches
+        if matching_items:
+            # Show completer popup
+            self.completer.complete()
+            
+            # Make sure line edit maintains focus and cursor position
+            line_edit = self.experiment_name.lineEdit()
+            cursor_pos = line_edit.cursorPosition()
+            QTimer.singleShot(10, lambda: line_edit.setCursorPosition(cursor_pos))
+
     def _update_config_from_segmentation(self):
         """Update config with current segmentation values"""
         if self.current_config:
@@ -273,6 +322,7 @@ class ExperimentManager(QWidget):
     def _update_experiment_names(self):
         """Populate experiment names from work directory"""
         self.experiment_name.clear()
+        self.all_experiment_names = []
         
         if not self.work_dir.value:
             return
@@ -288,17 +338,21 @@ class ExperimentManager(QWidget):
         ]
         
         if existing_experiments:
+            self.all_experiment_names = existing_experiments
             self.experiment_name.addItems(existing_experiments)
+            self.completer_model.setStringList(existing_experiments)
 
     def _on_experiment_selected(self):
         """Handle explicit experiment selection"""
         # Only update fields if this is a valid selection
         if self.experiment_name.currentIndex() >= 0:
-            # Clear fields first
-            self._clear_experiment_fields()
-            
             # Update button text
+
             self.submit_button.setText('Resume Experiment')
+            
+            # Try to load the experiment config if it exists
+
+            self._load_existing_experiment_config()
             
             # Enable/disable button based on state
             self._check_start_button_state()
@@ -310,6 +364,62 @@ class ExperimentManager(QWidget):
             self._clear_experiment_fields()
             self.submit_button.setText('Start New Experiment')
 
+    def _load_existing_experiment_config(self):
+
+        """Load configuration from an existing experiment"""
+        selected_experiment = self.experiment_name.currentText()
+
+        if not selected_experiment or not self.work_dir.value:
+
+            return
+            
+        # Build path to the experiment directory and config file
+        exp_dir = Path(self.work_dir.value) / selected_experiment
+        print(f'[Resume] Experiment directory: {exp_dir}')
+        config_path = next(exp_dir.glob(f"*_config.yml"), None)
+        print(f'[Resume] Found config_path (wildcard): {config_path}')
+        
+        if not config_path or not config_path.exists():
+            print('[Resume] Wildcard config not found, trying config.yml')
+            config_path = exp_dir / "config.yml"
+            if not config_path.exists():
+
+                return
+        
+        # Load the existing config
+        yaml = YAML(typ='safe')
+        try:
+            print(f'[Resume] Opening config file: {config_path}')
+            with open(config_path, 'r') as f:
+                existing_config = yaml.load(f)
+
+            # Update current config
+            self.current_config = existing_config
+
+            # Update UI with loaded config values
+            if 'data_dir' in existing_config:
+
+                self.data_dir.value = existing_config['data_dir']
+            # Load the original config template if available
+            if 'config_template' in existing_config:
+
+                self.config_template.value = existing_config['config_template']
+            else:
+
+                self.config_template.value = str(config_path)
+            # Set cores if available
+            if 'cores' in existing_config:
+
+                self.cores_input.setValue(existing_config['cores'])
+            # Load segmentation values if available
+            if 'segmentation_values' in existing_config:
+
+                self.segmentation_container._set_values(existing_config['segmentation_values'])
+            # Emit signal that config was loaded - this will update job tabs
+
+            self.config_loaded.emit()
+        except Exception as e:
+            pass
 
     def _check_start_button_state(self):
         """Enable start button only when all required fields are filled"""
@@ -350,12 +460,20 @@ class ExperimentManager(QWidget):
     def _update_config_paths(self):
         """Update paths in the config when directories are selected"""
         if self.current_config:
-            if not 'data_dir' in self.current_config:
+            # Don't overwrite existing paths when resuming
+            if 'data_dir' not in self.current_config and self.data_dir.value:
                 self.current_config['data_dir'] = str(self.data_dir.value)
-            if not 'work_dir' in self.current_config:
+            elif 'data_dir' in self.current_config:
+                # Update UI to reflect config value
+                self.data_dir.value = self.current_config['data_dir']
+            
+            if 'work_dir' not in self.current_config and self.work_dir.value:
                 self.current_config['work_dir'] = str(self.work_dir.value)
+            elif 'work_dir' in self.current_config:
+                    # No need to update work_dir UI since that's how we loaded the config
+                pass
 
-            self._check_start_button_state()
+        self._check_start_button_state()
 
     def _create_experiment(self):
         """Handle both new experiment creation and resuming"""
@@ -365,7 +483,9 @@ class ExperimentManager(QWidget):
             self._create_new_experiment()
 
     def _confirm_resume(self):
+
         """Show resume confirmation dialog"""
+
         dialog = QDialog(self)
         dialog.setWindowTitle('Confirm Resume')
         dialog.setFixedWidth(400)
@@ -434,40 +554,70 @@ class ExperimentManager(QWidget):
         dialog.exec_()
     
     def _handle_resume_confirmation(self, dialog, confirmed):
+
         """Handle resume confirmation result"""
         dialog.close()
+
         if confirmed:
+
             self._resume_experiment()
+        else:
+            pass    
 
     def _resume_experiment(self):
         """Resume existing experiment"""
         try:
-            # Validate existing files
-            exp_dir = Path(self.work_dir.value) / self.experiment_name.currentText()
+            # Get experiment name and validate
+            experiment_name = self.experiment_name.currentText().strip()
+
+            if not experiment_name:
+
+                raise ValueError("Experiment name cannot be empty")
+                
+            # Validate experiment directory
+            exp_dir = Path(self.work_dir.value) / experiment_name
+
             if not exp_dir.exists():
+
                 raise FileNotFoundError(f'Experiment directory {exp_dir} not found')
             
-            config_path = exp_dir / 'config.yml'
+            # Find config file (either format)
+            config_path = next(exp_dir.glob(f"*_config.yml"), None)
+
+            if not config_path:
+
+                config_path = exp_dir / "config.yml"
             if not config_path.exists():
-                raise FileNotFoundError(f'Config file {config_path} not found')
+
+                raise FileNotFoundError(f'Config file not found in {exp_dir}')
             
             # Load existing config
             yaml = YAML(typ='safe')
-            with open(config_path) as f:
+            print(f'[Resume] Opening config file: {config_path}')
+            with open(config_path, 'r') as f:
                 self.current_config = yaml.load(f)
+
             
-            # Update UI state
-            self._update_ui_from_config()
+            # Make sure we use the correct paths
+
+            self._update_config_paths()
+            
+            # Emit signal that config was loaded - this will update job tabs
+            self.config_loaded.emit()
             
             # Notify plugins
             if hasattr(self, 'tomoslice_plugin'):
+
                 self.tomoslice_plugin.update_directories()
             
+
             QMessageBox.information(self, 'Experiment Resumed', 
-                                   'Successfully resumed existing experiment!')
+                                   f'Successfully resumed experiment: {experiment_name}')
         except Exception as e:
+
             QMessageBox.critical(self, 'Resume Error',
                                 f'Failed to resume experiment: {str(e)}')
+
 
     def _create_new_experiment(self):
         """Create a new experiment by copying config template and setting up directories"""
@@ -535,31 +685,3 @@ class ExperimentManager(QWidget):
         self.cores_input.setValue(1)
         self.segmentation_container._set_values({})
         self.submit_button.setText('Start New Experiment')
-
-    def filter_experiments(self, text):
-        """Filter experiment names based on the text"""
-        # Block signals during filtering
-        self.experiment_name.blockSignals(True)
-        
-        # Get the combo box view
-        view = self.experiment_name.view()
-        
-        # Show popup with filtered items
-        self.experiment_name.showPopup()
-        
-        # Hide non-matching items
-        for i in range(self.experiment_name.count()):
-            item_text = self.experiment_name.itemText(i)
-            view.setRowHidden(i, not item_text.lower().startswith(text.lower()))
-        
-        # Restore signals
-        self.experiment_name.blockSignals(False)
-        
-        # Keep focus in the text box
-        line_edit = self.experiment_name.lineEdit()
-        line_edit.setFocus()
-        line_edit.deselect()
-        line_edit.setCursorPosition(len(text))
-        line_edit.grabKeyboard()
-
-        
