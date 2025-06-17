@@ -1,9 +1,11 @@
 import napari
-from magicgui import magicgui, widgets
-from qtpy.QtWidgets import QScrollArea, QTabWidget, QVBoxLayout, QWidget
+from magicgui import widgets
+from qtpy.QtWidgets import QTabWidget
+from qtpy import QtCore
 
-from morphometrics_config import ConfigEditor
-from jobs.seg_to_mesh import SegToMeshSubmissionWidget
+from jobs.mesh_tab import MeshGenerationWidget
+from jobs.pycurv_tab import PyCurvWidget
+from jobs.distance_tab import DistanceOrientationWidget
 from plugins.tomoslice_plugin import TomoslicePlugin
 from experiment_manager import ExperimentManager
 
@@ -12,48 +14,43 @@ def main():
         # Create the viewer
         viewer = napari.Viewer()
         
-        # Create main widget and layout for tabs
-        main_widget = QWidget()
-        layout = QVBoxLayout(main_widget)
-        
-        # Create tab widget
-        tabs = QTabWidget()
-        
         # Create widgets
-        config_editor = ConfigEditor()
         experiment_manager = ExperimentManager(viewer)
-        job_widget = SegToMeshSubmissionWidget(config_editor)
-        
+        mesh_widget = MeshGenerationWidget(experiment_manager)
+        pycurv_widget = PyCurvWidget(experiment_manager=experiment_manager)
+        distance_widget = DistanceOrientationWidget(viewer)
         # Create tomoslice plugin
         tomoslice = TomoslicePlugin(viewer, experiment_manager)
         
-        # Create scroll areas
-        experiment_scroll = QScrollArea()
-        experiment_scroll.setWidget(experiment_manager)
-        experiment_scroll.setWidgetResizable(True)
-        
-        config_scroll = QScrollArea()
-        config_scroll.setWidget(config_editor.native)
-        config_scroll.setWidgetResizable(True)
-        
-        job_scroll = QScrollArea()
-        job_scroll.setWidget(job_widget.native)
-        job_scroll.setWidgetResizable(True)
-        
-        # Add tabs
-        tabs.addTab(experiment_scroll, "Experiment")
-        tabs.addTab(config_scroll, "Configuration")
-        tabs.addTab(job_scroll, "Segmentation to Mesh")
-        
-        # Add tabs to layout
-        layout.addWidget(tabs)
-        
-        # Add main widget as dock widget
-        viewer.window.add_dock_widget(
-            main_widget,
-            name='Surface Morphometrics',
+        # Add widgets as separate dock widgets
+        dw1 = viewer.window.add_dock_widget(
+            experiment_manager,
+            name='Experiment',
             area='right'
         )
+        dw2 = viewer.window.add_dock_widget(
+            mesh_widget.native,
+            name='Mesh',
+            area='right'
+        )
+        dw3 = viewer.window.add_dock_widget(
+            pycurv_widget.native,
+            name='PyCurv',
+            area='right'
+        )
+        dw4 = viewer.window.add_dock_widget(
+            distance_widget.native,
+            name='Distance',
+            area='right'
+        )
+        
+        # Set tab position to top
+        viewer.window._qt_window.setTabPosition(QtCore.Qt.AllDockWidgetAreas, QTabWidget.North)
+        
+        # Tabify dock widgets
+        viewer.window._qt_window.tabifyDockWidget(dw1, dw2)
+        viewer.window._qt_window.tabifyDockWidget(dw2, dw3)
+        viewer.window._qt_window.tabifyDockWidget(dw3, dw4)
         
         napari.run()
         
