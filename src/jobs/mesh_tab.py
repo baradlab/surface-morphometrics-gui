@@ -93,7 +93,7 @@ class MeshGenerationWidget(widgets.Container):
         except Exception as e:
             print(f'[MeshTab] Could not determine experiment directory: {e}')
         if exp_dir and exp_dir.exists():
-            meshes_dir = exp_dir / 'meshes'
+            meshes_dir = exp_dir / 'results'
             mesh_files = list(meshes_dir.glob('*.ply')) + list(meshes_dir.glob('*.surface.vtp')) + list(meshes_dir.glob('*.xyz'))
             if mesh_files:
                 self.status.update_status('Completed')
@@ -115,7 +115,7 @@ class MeshGenerationWidget(widgets.Container):
             config_path = exp_dir / f"{self.experiment_manager.experiment_name.currentText()}_config.yml"
             
             # Create meshes directory
-            meshes_dir = exp_dir / 'meshes'
+            meshes_dir = exp_dir / 'results'
             meshes_dir.mkdir(exist_ok=True)
         
             if not config_path.exists():
