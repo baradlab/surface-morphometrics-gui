@@ -7,13 +7,17 @@ from jobs.mesh_tab import MeshGenerationWidget
 from jobs.pycurv_tab import PyCurvWidget
 from jobs.distance_tab import DistanceOrientationWidget
 from plugins.tomoslice_plugin import TomoslicePlugin
+from plugins.custom_vedo_cutter import CustomVedoCutter
+from qtpy.QtWidgets import QWidget
 from experiment_manager import ExperimentManager
+
 
 def main():
     try:
         # Create the viewer
         viewer = napari.Viewer()
         
+
         # Create widgets
         experiment_manager = ExperimentManager(viewer)
         mesh_widget = MeshGenerationWidget(experiment_manager)
@@ -22,20 +26,28 @@ def main():
         # Create tomoslice plugin
         tomoslice = TomoslicePlugin(viewer, experiment_manager)
         
-        # Add widgets as separate dock widgets
+        # Create vedo cutter directly - with full functionality (no hiding)
+        vedo_cutter = CustomVedoCutter(viewer)
+
+        # Add widget as dock widget under layer controls (left)
+        dw_vedo = viewer.window.add_dock_widget(
+            vedo_cutter,
+            name='Mesh Viewer',
+            area='left'
+        )
         dw1 = viewer.window.add_dock_widget(
             experiment_manager,
-            name='Experiment',
+            name='Experiment Manager',
             area='right'
         )
         dw2 = viewer.window.add_dock_widget(
             mesh_widget.native,
-            name='Mesh',
+            name='Surface Mesh',
             area='right'
         )
         dw3 = viewer.window.add_dock_widget(
             pycurv_widget.native,
-            name='PyCurv',
+            name='Curvature',
             area='right'
         )
         dw4 = viewer.window.add_dock_widget(
