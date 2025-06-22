@@ -32,7 +32,7 @@ def main():
         # Add widget as dock widget under layer controls (left)
         dw_vedo = viewer.window.add_dock_widget(
             vedo_cutter,
-            name='Mesh Viewer',
+            name='',
             area='left'
         )
         dw1 = viewer.window.add_dock_widget(
