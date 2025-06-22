@@ -8,7 +8,6 @@ from jobs.pycurv_tab import PyCurvWidget
 from jobs.distance_tab import DistanceOrientationWidget
 from plugins.tomoslice_plugin import TomoslicePlugin
 from plugins.custom_vedo_cutter import CustomVedoCutter
-from qtpy.QtWidgets import QWidget
 from experiment_manager import ExperimentManager
 
 
