@@ -1,6 +1,5 @@
 from plugins.custom_vedo_cutter import CustomVedoCutter
 
-from plugins.custom_vedo_cutter import CustomVedoCutter
 
 class VedoBridgePlugin:
     def __init__(self, viewer, experiment_manager):
