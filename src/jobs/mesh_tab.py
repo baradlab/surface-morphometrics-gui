@@ -5,14 +5,21 @@ import os
 from magicgui import widgets
 from widgets.job_status import JobStatusWidget
 from ruamel.yaml import YAML
-from qtpy.QtCore import QTimer
+from qtpy.QtCore import QTimer, Signal, QObject
+from qtpy.QtWidgets import QWidget
 import threading
 
-class MeshGenerationWidget(widgets.Container):
+class MeshGenerationWidget(QWidget):
     """Widget for surface mesh generation settings"""
     
+    # Signal to notify when mesh generation is complete
+    mesh_generation_complete = Signal()
+    
     def __init__(self, experiment_manager):
-        super().__init__(layout='vertical', labels=True)
+        super().__init__()
+        self.experiment_manager = experiment_manager
+        self.container = widgets.Container(layout='vertical', labels=True)
+        self.native = self.container.native  # Use magicgui container's native widget
         self.experiment_manager = experiment_manager
         
         # Create header container
@@ -56,7 +63,8 @@ class MeshGenerationWidget(widgets.Container):
         self.submit_btn.clicked.connect(self._run_job)
 
         # Add all widgets to layout
-        self.extend([
+        # Add all widgets to layout
+        self.container.extend([
             header,
             settings,
             self.submit_btn,
@@ -206,6 +214,8 @@ class MeshGenerationWidget(widgets.Container):
                 self.status.update_status('Completed')
                 self.status.update_progress(100)
                 print(f"Mesh files moved to: {meshes_dir}")
+                # Emit signal that mesh generation is complete
+                self.mesh_generation_complete.emit()
             else:
                 self.status.update_status('Failed')
                 print("Process failed! Check output for details.")
