@@ -159,8 +159,9 @@ class DistanceOrientationWidget(widgets.Container):
             work_dir = Path(exp_config.get('work_dir')).resolve()
             data_dir = Path(exp_config.get('data_dir')).resolve()
 
+            # Look for the script relative to the work directory
             script_paths = [
-                Path('/data1/surface_morphometrics_kfork/measure_distances_orientations.py'),
+                work_dir.parent / 'measure_distances_orientations.py',
                 work_dir.parent.parent / 'measure_distances_orientations.py',
             ]
             script_path = next((path for path in script_paths if path.exists()), None)
