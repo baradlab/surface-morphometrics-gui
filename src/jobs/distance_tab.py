@@ -167,12 +167,12 @@ class DistanceOrientationWidget(widgets.Container):
             script_path = next((path for path in script_paths if path.exists()), None)
             
             if not script_path:
-                # Handle script not found...
+                self.status.update_status('Error: measure_distances_orientations.py not found')
                 return
 
             mrc_files = [f for f in data_dir.glob('*.mrc') if not f.name.startswith('._')]
             if not mrc_files:
-                # Handle no MRC files found...
+                self.status.update_status('Error: No MRC files found')
                 return
 
             total_files = len(mrc_files)
@@ -181,7 +181,7 @@ class DistanceOrientationWidget(widgets.Container):
             lock = threading.Lock()
             max_workers = min(exp_config.get('cores', 1), total_files)
 
-            QTimer.singleShot(0, lambda: self.status.update_status(f'Processing {total_files} files...'))
+            self.status.update_status(f'Processing {total_files} files...')
             
             def process_mrc_file(mrc_file):
                 """
@@ -235,16 +235,16 @@ class DistanceOrientationWidget(widgets.Container):
                         else:
                             status_msg = f'Failed: {result["file_name"] if result else "Unknown"}'
                         
-                        QTimer.singleShot(0, lambda s=status_msg, p=processed_count, t=total_files: self.status.update_status(f'({p}/{t}) {s}'))
-                        QTimer.singleShot(0, lambda pr=progress: self.status.update_progress(pr))
+                        self.status.update_status(f'({processed_count}/{total_files}) {status_msg}')
+                        self.status.update_progress(progress)
 
             final_msg = f'Completed. Successful: {success_count}/{total_files}. See terminal for logs.'
-            QTimer.singleShot(0, lambda: self.status.update_status(final_msg))
+            self.status.update_status(final_msg)
             print(f"===== {final_msg} =====")
 
         except Exception as e:
             error_msg = f'A critical error occurred in the job worker: {e}'
-            QTimer.singleShot(0, lambda: self.status.update_status(f'Error: {e}'))
+            self.status.update_status(f'Error: {e}')
             import traceback
             print(error_msg)
             traceback.print_exc()

@@ -3,7 +3,7 @@ from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QLabel, QHBoxLayout, QComboBox, QMessageBox, QSpinBox, QDialog, 
     QCompleter
 )
-from qtpy.QtCore import Qt, QTimer, QStringListModel, Signal
+from qtpy.QtCore import Qt, QTimer, QStringListModel, Signal  # type: ignore
 from magicgui import widgets
 from ruamel.yaml import YAML
 import matplotlib.pyplot as plt
@@ -18,8 +18,6 @@ class SegmentationEntry(widgets.Container):
         
         # Label implementation
         self.label_field = widgets.LineEdit(value=label)
-        self.label_field.native.setReadOnly(True)
-        self.label_field.native.setFocusPolicy(Qt.NoFocus)
         
         # Value field
         self.value_field = widgets.SpinBox(value=value)
@@ -117,13 +115,22 @@ class SegmentationContainer(widgets.Container):
         """Add a new segmentation entry"""
         entry = SegmentationEntry(label=label, value=value, viewer=self.experiment_manager.viewer)
         entry.remove_button.clicked.connect(lambda: self._remove_entry(entry))
-        self.entries.append(entry)
-        self.insert(-1, entry)
+        # Connect label field changes to update config
+        entry.label_field.changed.connect(self._update_config)
+        # Connect value field changes to update config
+        entry.value_field.changed.connect(self._update_config)
+        self._entries.append(entry)
+        self.insert(len(self) - 1, entry)
 
     def _remove_entry(self, entry):
         if entry in self.entries:
             self.entries.remove(entry)
             self.remove(entry)
+    
+    def _update_config(self):
+        """Update the configuration when labels or values change"""
+        if hasattr(self.experiment_manager, '_update_config_from_segmentation'):
+            self.experiment_manager._update_config_from_segmentation()
     
     def get_values(self):
         return {

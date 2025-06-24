@@ -22,6 +22,9 @@ def main():
         mesh_widget = MeshGenerationWidget(experiment_manager)
         pycurv_widget = PyCurvWidget(experiment_manager=experiment_manager)
         distance_widget = DistanceOrientationWidget(experiment_manager)
+        
+        # Connect mesh generation completion signal to PyCurv file list refresh
+        mesh_widget.mesh_generation_complete.connect(pycurv_widget._populate_vtp_file_list)
         # Create tomoslice plugin
         tomoslice = TomoslicePlugin(viewer, experiment_manager)
         
@@ -40,7 +43,7 @@ def main():
             area='right'
         )
         dw2 = viewer.window.add_dock_widget(
-            mesh_widget.native,
+            mesh_widget,
             name='Surface Mesh',
             area='right'
         )
