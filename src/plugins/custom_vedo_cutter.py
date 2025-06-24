@@ -57,19 +57,21 @@ class CustomVedoCutter(VedoCutter):
             enabled=False,
             readout=False,  
             tracking=True, 
-            step=0.01,  # Set a reasonable step size
+            step=0.0001,  # Set a reasonable step size
             tooltip="Adjust the data range for the colormap"
         )
         self.contrast_min = FloatSpinBox(
             label="Min",
             value=0.0,
             enabled=False,
+            step=0.0001,
             tooltip="Set minimum value for contrast"
         )
         self.contrast_max = FloatSpinBox(
             label="Max",
             value=1.0,
             enabled=False,
+            step=0.0001,
             tooltip="Set maximum value for contrast"
         )
 
