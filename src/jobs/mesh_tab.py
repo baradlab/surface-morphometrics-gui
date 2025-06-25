@@ -61,8 +61,7 @@ class MeshGenerationWidget(QWidget):
         self.status = JobStatusWidget()
         self.submit_btn = widgets.PushButton(text='Generate Surface Mesh')
         self.submit_btn.clicked.connect(self._run_job)
-
-        # Add all widgets to layout
+        
         # Add all widgets to layout
         self.container.extend([
             header,

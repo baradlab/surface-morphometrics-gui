@@ -23,8 +23,6 @@ def main():
         pycurv_widget = PyCurvWidget(experiment_manager=experiment_manager)
         distance_widget = DistanceOrientationWidget(experiment_manager)
         
-        # Connect mesh generation completion signal to PyCurv file list refresh
-        mesh_widget.mesh_generation_complete.connect(pycurv_widget._populate_vtp_file_list)
         # Create tomoslice plugin
         tomoslice = TomoslicePlugin(viewer, experiment_manager)
         
@@ -65,6 +63,10 @@ def main():
         viewer.window._qt_window.tabifyDockWidget(dw1, dw2)
         viewer.window._qt_window.tabifyDockWidget(dw2, dw3)
         viewer.window._qt_window.tabifyDockWidget(dw3, dw4)
+        
+        # Connect mesh generation completion signal to PyCurv file list refresh
+        # (Connect after widgets are added to ensure they are fully initialized)
+        mesh_widget.mesh_generation_complete.connect(pycurv_widget.on_mesh_generation_complete)
         
         napari.run()
         
