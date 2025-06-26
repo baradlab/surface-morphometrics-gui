@@ -16,36 +16,43 @@ The Surface Morphometrics GUI enables researchers to:
 - [ ] Install the surface morphometrics pipeline [here](https://github.com/GrotjahnLab/surface_morphometrics)
 - Python 3.8 or higher
 
-## Dependencies
-- [ ] napari
-- [ ] napari-tomoslice
-
 ## Installation Steps
-1. Clone the repository
+1. Clone the repositories
 ```bash
 git clone https://github.com/baradlab/surface_morphometrics.git
-cd surface-morphometrics-gui
+git clone https://github.com/baradlab/surface-morphometrics-gui.git
 ```
-2. Activate the conda environment that was created during the installation of the surface morphometrics pipeline
-```bash
+2. Go to the surface morphometrics directory
+```
+cd surface_morphometrics
+```
+3. Install conda environment
+```
+conda env create -f environment.yml
+```
+4. Activate the conda environment
+```
 conda activate morphometrics
 ```
-3. Install dependencies
-```bash
-pip install -r requirements.txt
+5. Install additional dependencies
 ```
-4. Run the GUI
-1. Make sure you are in the root directory of the repository and virtual environment is activated
-2. Run the main script
-```bash
+pip install -r pip_requirements.txt
+```
+6. exit the surface morphometrics directory and open the gui directory
+```
+cd surface-morphometrics-gui/src
+```
+7. Run the GUI
+```
 python main.py
 ```
 
+
 ## Features (Planned)
-- [ ] Interactive visualization of membrane segmentations
-- [ ] Configuration file editor
-- [ ] Tabs for running each step of the surface morphometrics pipeline
-- [ ] Interactive Color coding for segmentation classes
+- [x] Interactive visualization of membrane segmentations
+- [x] Configuration file editor
+- [x] Tabs for running each step of the surface morphometrics pipeline
+- [x] Interactive Color coding for segmentation classes
 
 ## License
 This project is licensed under the MIT licence - see the LICESNSE file for details
