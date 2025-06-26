@@ -47,6 +47,10 @@ class PyCurvWidget(widgets.Container):
         self.select_all_vtp_checkbox = widgets.CheckBox(text="Select/Deselect All")
         self.select_all_vtp_checkbox.changed.connect(self._on_select_all_changed)
         
+        # Add refresh button
+        self.refresh_btn = widgets.PushButton(text='Refresh VTP List')
+        self.refresh_btn.clicked.connect(self._populate_vtp_file_list)
+        
         self.vtp_file_list_container = widgets.Container(layout='vertical')
 
         self.submit_btn = widgets.PushButton(text='Run Curvature Analysis')
@@ -59,6 +63,7 @@ class PyCurvWidget(widgets.Container):
             settings_container,
             self.vtp_list_header_label,
             self.select_all_vtp_checkbox,
+            self.refresh_btn,
             self.vtp_file_list_container,
             self.submit_btn,
             self.status
@@ -86,14 +91,13 @@ class PyCurvWidget(widgets.Container):
                 self.vtp_file_list_container.append(widgets.Label(value="Experiment configuration not loaded."))
                 return
 
-            exp_config = self.experiment_manager.current_config
-            work_dir_in_config = exp_config.get('work_dir')
-
-            if not work_dir_in_config:
-                self.vtp_file_list_container.append(widgets.Label(value="Work directory not set in config."))
+            # Construct experiment directory the same way as mesh tab
+            try:
+                exp_dir = Path(self.experiment_manager.work_dir.value) / self.experiment_manager.experiment_name.currentText()
+            except Exception as e:
+                self.vtp_file_list_container.append(widgets.Label(value=f"Could not determine experiment directory: {e}"))
                 return
 
-            exp_dir = Path(work_dir_in_config)
             # Look for VTP files in the main directory and a 'meshes' or 'results' subdirectory
             vtp_files = sorted(list(exp_dir.glob('*.surface.vtp')) + list(exp_dir.glob('*.SURFACE.VTP')))
             
@@ -106,17 +110,23 @@ class PyCurvWidget(widgets.Container):
                                    list((exp_dir / 'results').glob('*.SURFACE.VTP'))))
             
             if not vtp_files:
-                self.vtp_file_list_container.append(widgets.Label(value="No VTP files found."))
+                self.vtp_file_list_container.append(widgets.Label(value="No VTP files found. Generate surface meshes first."))
                 return
 
+            # Add a label showing how many files were found
+            self.vtp_file_list_container.append(widgets.Label(value=f"Found {len(vtp_files)} VTP file(s):"))
+            
             for vtp_file in vtp_files:
                 checkbox = widgets.CheckBox(text=vtp_file.name)
                 checkbox.file_path = str(vtp_file)
                 self.vtp_checkboxes.append(checkbox)
                 self.vtp_file_list_container.append(checkbox)
+            
         except Exception as e:
             self.vtp_file_list_container.append(widgets.Label(value=f"Error loading files: {e}"))
             print(f"[PyCurvWidget] Error populating VTP file list: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _on_config_loaded(self):
         """Update UI when experiment is loaded or resumed."""
@@ -139,18 +149,13 @@ class PyCurvWidget(widgets.Container):
         if not self.experiment_manager.current_config:
             raise ValueError("Experiment configuration not loaded.")
 
-        exp_config = self.experiment_manager.current_config
-        work_dir_in_config = exp_config.get('work_dir')
-
-        if not work_dir_in_config:
-            raise ValueError("Work directory not found in config.")
-
-        exp_dir = Path(work_dir_in_config).resolve()
+        # Construct experiment directory the same way as mesh tab
+        exp_dir = Path(self.experiment_manager.work_dir.value) / self.experiment_manager.experiment_name.currentText()
         config_path = exp_dir / 'config.yml'
 
         pycurv_specific_config_data = {
             'work_dir': str(exp_dir) + os.sep,
-            'cores': exp_config.get('cores', 1),
+            'cores': self.experiment_manager.current_config.get('cores', 1),
             'curvature_measurements': {
                 'radius_hit': self.radius_hit_input.value,
                 'min_component': self.min_component_input.value,
@@ -271,3 +276,7 @@ class PyCurvWidget(widgets.Container):
         self.submit_btn.enabled = True
         self.is_running = False
         self._populate_vtp_file_list()
+
+    def on_mesh_generation_complete(self):
+        """Handle mesh generation completion signal in a thread-safe way"""
+        QTimer.singleShot(0, self._populate_vtp_file_list)

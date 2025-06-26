@@ -17,6 +17,12 @@ class CustomVedoCutter(VedoCutter):
         self.viewer = args[0]
         super().__init__(*args, **kwargs)
 
+        # Configure better lighting for more even illumination
+        self._configure_lighting()
+
+        # Configure lighting for all existing surface layers
+        self._configure_all_surface_lighting()
+
         # Hide all UI elements from parent class
         self._hide_parent_ui_elements()
 
@@ -148,6 +154,15 @@ class CustomVedoCutter(VedoCutter):
         self.last_mesh_filename = None
         self._start_auto_send_monitor()
 
+    def _configure_lighting(self):
+        
+        # Change from "shiny" to "ambient" for more even lighting
+        self.mesh_lighting = "ambient"
+        
+        # If mesh is already loaded, apply the new lighting
+        if hasattr(self, 'mesh') and self.mesh is not None:
+            self.mesh.lighting(self.mesh_lighting)
+
     def _start_auto_send_monitor(self):
         """Start monitoring for new meshes and automatically send them to napari."""
         self.mesh_monitor_timer = QTimer()
@@ -211,6 +226,9 @@ class CustomVedoCutter(VedoCutter):
         if isinstance(layer, Surface):
             # Try to initialize it as a VTP layer
             self._initialize_vtp_layer(layer)
+            
+            # Configure lighting for the new layer
+            self._configure_napari_lighting(layer)
 
     def _on_active_layer_changed(self, event):
         """Update UI when the active layer changes."""
@@ -325,6 +343,9 @@ class CustomVedoCutter(VedoCutter):
 
                 # Update UI after successful initialization
                 self._update_ui_from_layer(layer)
+                
+                # Configure better lighting
+                self._configure_napari_lighting(layer)
             else:
                 self._extract_data_from_layer(layer)
 
@@ -354,6 +375,9 @@ class CustomVedoCutter(VedoCutter):
 
             # Update UI
             self._update_ui_from_layer(layer)
+            
+            # Configure better lighting
+            self._configure_napari_lighting(layer)
 
     def _create_user_friendly_names(self, scalar_names):
         """Create a clean list of property names, similar to the raw names in Paraview."""
@@ -443,6 +467,49 @@ class CustomVedoCutter(VedoCutter):
 
         # Update contrast slider state
         self._update_contrast_slider_state(layer)
+
+    def _configure_napari_lighting(self, layer):
+        """Configure better lighting for napari surface layers."""
+        if not isinstance(layer, Surface):
+            return
+            
+        # Try to set shading to 'none' for most even appearance
+        if hasattr(layer, 'shading'):
+            try:
+                layer.shading = 'none'
+                return  # Success, no need to try other approaches
+            except (AttributeError, ValueError) as e:
+                # Only catch specific exceptions, not all exceptions
+                pass
+            
+        # Fallback to flat shading if 'none' doesn't work
+        if hasattr(layer, 'shading'):
+            try:
+                layer.shading = 'flat'
+                return
+            except (AttributeError, ValueError) as e:
+                pass
+                
+        # Final fallback to smooth shading
+        if hasattr(layer, 'shading'):
+            try:
+                layer.shading = 'smooth'
+            except (AttributeError, ValueError) as e:
+                pass
+
+    def _configure_all_surface_lighting(self):
+        """Configure lighting for all existing surface layers in the viewer."""
+        for layer in self.viewer.layers:
+            if isinstance(layer, Surface):
+                self._configure_napari_lighting(layer)
+
+    def fix_current_layer_lighting(self):
+        """Manually fix lighting for the currently selected layer."""
+        layer = self.viewer.layers.selection.active
+        if layer and isinstance(layer, Surface):
+            self._configure_napari_lighting(layer)
+        else:
+            print("No surface layer currently selected")
 
     def _on_property_changed(self, new_property: str):
         """Handle user selecting a new property from the dropdown."""
@@ -652,7 +719,11 @@ class CustomVedoCutter(VedoCutter):
         # --- CRITICAL: Embed the source path in the metadata ---
         metadata = {'source_vtp_path': filepath}
 
-        self.viewer.add_surface(mesh_tuple, name=name, metadata=metadata)
+        # Add surface with better lighting configuration
+        surface_layer = self.viewer.add_surface(mesh_tuple, name=name, metadata=metadata)
+        
+        # Configure better lighting for napari surface using comprehensive approach
+        self._configure_napari_lighting(surface_layer)
 
     def _apply_auto_colormap(self, layer, property_name, data):
         """Automatically apply appropriate colormap based on property type ."""
@@ -761,3 +832,21 @@ class CustomVedoCutter(VedoCutter):
                 clamped_min = max(min(min_val, self.contrast_slider.max), self.contrast_slider.min)
                 clamped_max = max(min(max_val, self.contrast_slider.max), self.contrast_slider.min)
                 self.contrast_slider.value = (clamped_min, clamped_max)
+
+    def get_from_napari(self):
+        """Override to ensure proper lighting is applied when loading meshes."""
+        # Call parent method first
+        super().get_from_napari()
+        
+        # Apply our custom lighting
+        if hasattr(self, 'mesh') and self.mesh is not None:
+            self.mesh.lighting(self.mesh_lighting)
+
+    def _load_mesh(self):
+        """Override to ensure proper lighting is applied when loading meshes from files."""
+        # Call parent method first
+        super()._load_mesh()
+        
+        # Apply our custom lighting
+        if hasattr(self, 'mesh') and self.mesh is not None:
+            self.mesh.lighting(self.mesh_lighting)
