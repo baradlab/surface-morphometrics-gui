@@ -22,7 +22,10 @@ def main():
         mesh_widget = MeshGenerationWidget(experiment_manager)
         pycurv_widget = PyCurvWidget(experiment_manager=experiment_manager)
         distance_widget = DistanceOrientationWidget(experiment_manager)
-        
+
+        # Connect mesh generation completion signal to PyCurv file list refresh
+        mesh_widget.mesh_generation_complete.connect(pycurv_widget._populate_vtp_file_list)
+        print("Mesh generation complete signal connected to PyCurv file list refresh.")
         # Create tomoslice plugin
         tomoslice = TomoslicePlugin(viewer, experiment_manager)
         

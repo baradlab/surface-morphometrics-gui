@@ -206,15 +206,37 @@ class MeshGenerationWidget(QWidget):
                             self.status.update_progress(min(progress, 100))
             return_code = process.wait()
             if return_code == 0:
-                for pattern in ['*.ply', '*.surface.vtp', '*.xyz']:
-                    for f in work_dir.glob(pattern):
-                        print(f"Moving {f} to {meshes_dir / f.name}")
-                        f.rename(meshes_dir / f.name)
-                self.status.update_status('Completed')
-                self.status.update_progress(100)
-                print(f"Mesh files moved to: {meshes_dir}")
-                # Emit signal that mesh generation is complete
-                self.mesh_generation_complete.emit()
+                exp_dir = Path(self.experiment_manager.work_dir.value) / self.experiment_manager.experiment_name.currentText()
+                
+                # Enhanced file moving with better search and error handling
+                moved_files = []
+                search_locations = [exp_dir, work_dir, work_dir.parent]  # Search multiple locations
+                
+                for search_dir in search_locations:
+                    print(f"Searching for mesh files in: {search_dir}")
+                    for pattern in ['*.ply', '*.surface.vtp', '*.xyz', '**/*.ply', '**/*.surface.vtp', '**/*.xyz']:
+                        for f in search_dir.glob(pattern):
+                            if f.is_file() and f.parent != meshes_dir:  # Don't move files already in results
+                                try:
+                                    dest_path = meshes_dir / f.name
+                                    print(f"Moving {f} to {dest_path}")
+                                    f.rename(dest_path)
+                                    moved_files.append(dest_path)
+                                except Exception as e:
+                                    print(f"Error moving {f}: {e}")
+                
+                # Check if files exist in results directory (whether moved or already there)
+                mesh_files = list(meshes_dir.glob('*.ply')) + list(meshes_dir.glob('*.surface.vtp')) + list(meshes_dir.glob('*.xyz'))
+                
+                if mesh_files:
+                    self.status.update_status('Completed')
+                    self.status.update_progress(100)
+                    print(f"Mesh generation completed. Files in results: {[f.name for f in mesh_files]}")
+                    # Emit signal that mesh generation is complete - this will trigger other tabs to refresh
+                    QTimer.singleShot(100, lambda: self.mesh_generation_complete.emit())
+                else:
+                    self.status.update_status('Warning: No mesh files found')
+                    print("Warning: Process completed but no mesh files found in results directory")
             else:
                 self.status.update_status('Failed')
                 print("Process failed! Check output for details.")
