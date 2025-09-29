@@ -1,0 +1,32 @@
+site_name: Surface Morphometrics GUI
+nav:
+  - Home: index.md
+  - About: about.md
+  - Features:
+    - New Experiment: features/new-experiment.md
+    - Resume Experiment: features/resume-experiment.md
+  - Tutorials:
+    - Pipeline: tutorials/pipeline.md
+    - Visualization: tutorials/visualization.md
+site_url: https://sitename.example
+theme: 
+  name: material
+  palette: 
+    scheme: slate
+
+# Markdown extensions
+markdown_extensions:
+  - markdown.extensions.abbr
+  - markdown.extensions.admonition
+  - markdown.extensions.attr_list
+  - markdown.extensions.def_list
+  - markdown.extensions.footnotes
+  - markdown.extensions.md_in_html
+  - markdown.extensions.toc:
+      permalink: true
+      title: On this page
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.tasklist
+  - pymdownx.emoji
+

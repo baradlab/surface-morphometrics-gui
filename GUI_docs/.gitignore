@@ -1,0 +1,7 @@
+# Docs local ignores
+venv/
+site/
+.DS_Store
+*.swp
+*.swo
+__pycache__/
