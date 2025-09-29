@@ -1,68 +1,79 @@
 import napari
 from magicgui import widgets
-from qtpy.QtWidgets import QTabWidget
+from qtpy.QtWidgets import QTabWidget, QSizePolicy, QApplication
 from qtpy import QtCore
+import logging
+logging.basicConfig(level=logging.INFO)
 
 from jobs.mesh_tab import MeshGenerationWidget
 from jobs.pycurv_tab import PyCurvWidget
 from jobs.distance_tab import DistanceOrientationWidget
 from plugins.tomoslice_plugin import TomoslicePlugin
 from plugins.custom_vedo_cutter import CustomVedoCutter
+from plugins.protein import ProteinLoaderPlugin
 from experiment_manager import ExperimentManager
 
+def setup_responsive_layout(viewer):
+    """Setup responsive layout behavior for the viewer"""
+    # Get the main window
+    main_window = viewer.window._qt_window
+    
+    # Set size policies for better resizing
+    main_window.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+    
+    # Enable dock widget features for better resizing
+    main_window.setDockNestingEnabled(True)
+    main_window.setTabPosition(QtCore.Qt.AllDockWidgetAreas, QTabWidget.North)
+    
+    # Set minimum size for the main window
+    main_window.setMinimumSize(800, 600)
 
 def main():
     try:
         # Create the viewer
         viewer = napari.Viewer()
         
-
+        # Setup responsive layout
+        setup_responsive_layout(viewer)
+        
         # Create widgets
         experiment_manager = ExperimentManager(viewer)
         mesh_widget = MeshGenerationWidget(experiment_manager)
         pycurv_widget = PyCurvWidget(experiment_manager=experiment_manager)
         distance_widget = DistanceOrientationWidget(experiment_manager)
-        
+
+        # Connect mesh generation completion signal to PyCurv file list refresh
+        mesh_widget.mesh_generation_complete.connect(pycurv_widget._populate_vtp_file_list)
+        print("Mesh generation complete signal connected to PyCurv file list refresh.")
         # Create tomoslice plugin
         tomoslice = TomoslicePlugin(viewer, experiment_manager)
         
+        
         # Create vedo cutter directly - with full functionality (no hiding)
         vedo_cutter = CustomVedoCutter(viewer)
+        
 
         # Add widget as dock widget under layer controls (left)
         dw_vedo = viewer.window.add_dock_widget(
             vedo_cutter,
-            name='',
+            name='Vedo Cutter',
             area='left'
         )
-        dw1 = viewer.window.add_dock_widget(
-            experiment_manager,
-            name='Experiment Manager',
-            area='right'
-        )
-        dw2 = viewer.window.add_dock_widget(
-            mesh_widget,
-            name='Surface Mesh',
-            area='right'
-        )
-        dw3 = viewer.window.add_dock_widget(
-            pycurv_widget.native,
-            name='Curvature',
-            area='right'
-        )
-        dw4 = viewer.window.add_dock_widget(
-            distance_widget.native,
-            name='Distance',
-            area='right'
-        )
         
-        # Set tab position to top
-        viewer.window._qt_window.setTabPosition(QtCore.Qt.AllDockWidgetAreas, QTabWidget.North)
+        # Setup and add dock widgets with proper sizing
+        dw1 = viewer.window.add_dock_widget(experiment_manager, name='Experiment Manager', area='right')
+        dw2 = viewer.window.add_dock_widget(mesh_widget, name='Surface Mesh', area='right')
+        dw3 = viewer.window.add_dock_widget(pycurv_widget, name='Curvature', area='right')
+        dw4 = viewer.window.add_dock_widget(distance_widget.native, name='Distance', area='right')
+        
+        protein_loader = ProteinLoaderPlugin(viewer)
+        dw_protein_loader = viewer.window.add_dock_widget(protein_loader.container.native, name='Protein Loader', area='right')
         
         # Tabify dock widgets
         viewer.window._qt_window.tabifyDockWidget(dw1, dw2)
         viewer.window._qt_window.tabifyDockWidget(dw2, dw3)
         viewer.window._qt_window.tabifyDockWidget(dw3, dw4)
+        viewer.window._qt_window.tabifyDockWidget(dw1, dw_protein_loader)
         
         # Connect mesh generation completion signal to PyCurv file list refresh
         # (Connect after widgets are added to ensure they are fully initialized)

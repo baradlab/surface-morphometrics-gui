@@ -1,7 +1,7 @@
 from pathlib import Path
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QLabel, QHBoxLayout, QComboBox, QMessageBox, QSpinBox, QDialog, 
-    QCompleter
+    QCompleter, QSizePolicy, QScrollArea
 )
 from qtpy.QtCore import Qt, QTimer, QStringListModel, Signal  # type: ignore
 from magicgui import widgets
@@ -150,12 +150,31 @@ class ExperimentManager(QWidget):
             'config.yml'
         )
         self.current_config = {}
+        # Set size policies for better resizing
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        self.setMinimumWidth(350)
+        self.setMinimumHeight(400)
+        
+        # Create scroll area for better content management
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        
+        # Create main content widget
+        content_widget = QWidget()
         self.layout = QVBoxLayout()
-        self.setLayout(self.layout)
+        content_widget.setLayout(self.layout)
         self.layout.setSpacing(10)
-
-        # Set a fixed width for the dialog box
-        self.setFixedWidth(400)
+        self.layout.setContentsMargins(10, 10, 10, 10)
+        
+        # Set scroll area widget
+        scroll_area.setWidget(content_widget)
+        
+        # Set main layout
+        main_layout = QVBoxLayout()
+        self.setLayout(main_layout)
+        main_layout.addWidget(scroll_area)
 
         # === Start New Experiment Section ===
         start_header = QLabel("Start New Experiment")
@@ -166,7 +185,8 @@ class ExperimentManager(QWidget):
         # Work Directory
         work_dir_layout = QHBoxLayout()
         work_dir_label = QLabel("Work Directory:")
-        work_dir_label.setFixedWidth(120)  # Fixed width for labels
+        work_dir_label.setMinimumWidth(120)  # Minimum width for labels
+        work_dir_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         self.work_dir = widgets.FileEdit(
             mode='d'
         )
@@ -174,12 +194,14 @@ class ExperimentManager(QWidget):
         self.work_dir.changed.connect(self._check_start_button_state)  # Connect to enable/disable button
         work_dir_layout.addWidget(work_dir_label)
         work_dir_layout.addWidget(self.work_dir.native)
+        work_dir_layout.setStretch(1, 1)  # Make file edit stretch
         self.layout.addLayout(work_dir_layout)
 
         # Experiment Name with proper completer setup
         experiment_name_layout = QHBoxLayout()
         experiment_name_label = QLabel("Experiment Name:")
-        experiment_name_label.setFixedWidth(120)
+        experiment_name_label.setMinimumWidth(120)
+        experiment_name_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         self.experiment_name = QComboBox()
         self.experiment_name.setEditable(True)
         self.experiment_name.setInsertPolicy(QComboBox.NoInsert)
@@ -192,12 +214,14 @@ class ExperimentManager(QWidget):
         self.experiment_name.editTextChanged.connect(self._check_start_button_state)
         experiment_name_layout.addWidget(experiment_name_label)
         experiment_name_layout.addWidget(self.experiment_name)
+        experiment_name_layout.setStretch(1, 1)  # Make combo box stretch
         self.layout.addLayout(experiment_name_layout)
 
         # Data Directory
         data_dir_layout = QHBoxLayout()
         data_dir_label = QLabel("Data Directory:")
-        data_dir_label.setFixedWidth(120)
+        data_dir_label.setMinimumWidth(120)
+        data_dir_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         self.data_dir = widgets.FileEdit(
             mode='d'
         )
@@ -205,12 +229,14 @@ class ExperimentManager(QWidget):
         self.data_dir.changed.connect(self._check_start_button_state)  # Connect to enable/disable button
         data_dir_layout.addWidget(data_dir_label)
         data_dir_layout.addWidget(self.data_dir.native)
+        data_dir_layout.setStretch(1, 1)  # Make file edit stretch
         self.layout.addLayout(data_dir_layout)
 
         # Config Template File
         config_template_layout = QHBoxLayout()
         config_template_label = QLabel("Config Template File:")
-        config_template_label.setFixedWidth(120)
+        config_template_label.setMinimumWidth(120)
+        config_template_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         self.config_template = widgets.FileEdit(
             filter='*.yml',
             mode='r'
@@ -219,18 +245,21 @@ class ExperimentManager(QWidget):
         self.config_template.changed.connect(self._check_start_button_state)  # Connect to enable/disable button
         config_template_layout.addWidget(config_template_label)
         config_template_layout.addWidget(self.config_template.native)
+        config_template_layout.setStretch(1, 1)  # Make file edit stretch
         self.layout.addLayout(config_template_layout)
 
         # Cores Input
         cores_layout = QHBoxLayout()
         cores_label = QLabel("Cores:")
-        cores_label.setFixedWidth(120)
+        cores_label.setMinimumWidth(120)
+        cores_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         self.cores_input = QSpinBox()
         self.cores_input.setMinimum(1)
         self.cores_input.setMaximum(64)  # Adjust max cores as needed
         self.cores_input.setValue(14)  # Default value
         cores_layout.addWidget(cores_label)
         cores_layout.addWidget(self.cores_input)
+        cores_layout.setStretch(1, 1)  # Make spin box stretch
         self.layout.addLayout(cores_layout)
 
         # === Segmentation Section ===
