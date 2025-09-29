@@ -10,6 +10,24 @@ import glob
 from magicgui import widgets
 from qtpy.QtCore import QTimer
 from magicgui.widgets import FloatRangeSlider, FloatSpinBox
+from qtpy.QtWidgets import QSizePolicy
+
+# Import napari-threedee components for automatic lighting and ambient occlusion
+try:
+    from napari_threedee.visualization.lighting_control import LightingControl
+    from napari_threedee.utils.napari_utils import get_napari_visual
+    NAPARI_THREEDEE_AVAILABLE = True
+except ImportError:
+    NAPARI_THREEDEE_AVAILABLE = False
+    print("Warning: napari-threedee not available for automatic lighting control")
+
+# Import libigl for ambient occlusion
+try:
+    import igl
+    IGL_AVAILABLE = True
+except ImportError:
+    IGL_AVAILABLE = False
+    print("Warning: libigl not available for ambient occlusion")
 
 
 class CustomVedoCutter(VedoCutter):
@@ -17,11 +35,8 @@ class CustomVedoCutter(VedoCutter):
         self.viewer = args[0]
         super().__init__(*args, **kwargs)
 
-        # Configure better lighting for more even illumination
-        self._configure_lighting()
-
-        # Configure lighting for all existing surface layers
-        self._configure_all_surface_lighting()
+        # Initialize automatic lighting and ambient occlusion
+        self._initialize_automatic_lighting_ao()
 
         # Hide all UI elements from parent class
         self._hide_parent_ui_elements()
@@ -33,6 +48,8 @@ class CustomVedoCutter(VedoCutter):
 
         # Create a completely new layout with just the essential controls
         self.controls_container = widgets.Container(layout='vertical', labels=True)
+        self.controls_container.native.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        self.controls_container.native.setMinimumWidth(250)
 
         self.property_selector = widgets.ComboBox(
             label="Property",
@@ -86,8 +103,9 @@ class CustomVedoCutter(VedoCutter):
         self.contrast_min.min_width = 80
         self.contrast_max.min_width = 80
 
-        # Set the slider to take up more space
+        # Set the slider to take up more space and be more flexible
         self.contrast_slider.min_width = 200
+        self.contrast_slider.native.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         self.contrast_container.append(self.contrast_min)
         self.contrast_container.append(self.contrast_slider)
@@ -98,17 +116,14 @@ class CustomVedoCutter(VedoCutter):
 
         # Create a clean container for the load mesh button with a Mesh Display label beside it
         if self.load_mesh_button:
-
             mesh_row_container = widgets.Container(layout='horizontal')
-
             mesh_display_label = widgets.Label(value="Mesh Display")
-
             mesh_row_container.append(mesh_display_label)
-
+            
             button_container = widgets.Container()
             button_container.native.layout().addWidget(self.load_mesh_button)
             mesh_row_container.append(button_container)
-
+            
             # Add the components to our controls
             self.controls_container.extend([
                 mesh_row_container,
@@ -135,7 +150,8 @@ class CustomVedoCutter(VedoCutter):
             if widget:
                 widget.setParent(None)
 
-        # Add our clean container
+        # Add our clean container with better sizing
+        self.controls_container.native.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         layout.addWidget(self.controls_container.native)
 
         # --- Connect Signals ---
@@ -152,14 +168,7 @@ class CustomVedoCutter(VedoCutter):
         self.last_mesh_filename = None
         self._start_auto_send_monitor()
 
-    def _configure_lighting(self):
-        
-        # Change from "shiny" to "ambient" for more even lighting
-        self.mesh_lighting = "ambient"
-        
-        # If mesh is already loaded, apply the new lighting
-        if hasattr(self, 'mesh') and self.mesh is not None:
-            self.mesh.lighting(self.mesh_lighting)
+
 
     def _start_auto_send_monitor(self):
         """Start monitoring for new meshes and automatically send them to napari."""
@@ -222,11 +231,14 @@ class CustomVedoCutter(VedoCutter):
 
         # Check if this is a Surface layer with data
         if isinstance(layer, Surface):
+            # Ensure proper shading filter initialization to prevent napari-threedee errors
+            self._ensure_surface_shading_initialized(layer)
+            
             # Try to initialize it as a VTP layer
             self._initialize_vtp_layer(layer)
             
-            # Configure lighting for the new layer
-            self._configure_napari_lighting(layer)
+            # Apply automatic lighting and ambient occlusion
+            self._apply_automatic_lighting_ao(layer)
 
     def _on_active_layer_changed(self, event):
         """Update UI when the active layer changes."""
@@ -341,9 +353,6 @@ class CustomVedoCutter(VedoCutter):
 
                 # Update UI after successful initialization
                 self._update_ui_from_layer(layer)
-                
-                # Configure better lighting
-                self._configure_napari_lighting(layer)
             else:
                 self._extract_data_from_layer(layer)
 
@@ -373,9 +382,6 @@ class CustomVedoCutter(VedoCutter):
 
             # Update UI
             self._update_ui_from_layer(layer)
-            
-            # Configure better lighting
-            self._configure_napari_lighting(layer)
 
     def _create_user_friendly_names(self, scalar_names):
         """Create a clean list of property names, similar to the raw names in Paraview."""
@@ -466,48 +472,28 @@ class CustomVedoCutter(VedoCutter):
         # Update contrast slider state
         self._update_contrast_slider_state(layer)
 
-    def _configure_napari_lighting(self, layer):
-        """Configure better lighting for napari surface layers."""
+
+    
+    def _ensure_surface_shading_initialized(self, layer):
+        """Ensure surface layer has proper shading filter initialization to prevent napari-threedee errors."""
         if not isinstance(layer, Surface):
             return
             
-        # Try to set shading to 'none' for most even appearance
-        if hasattr(layer, 'shading'):
-            try:
-                layer.shading = 'none'
-                return  # Success, no need to try other approaches
-            except (AttributeError, ValueError) as e:
-                # Only catch specific exceptions, not all exceptions
-                pass
+        try:
+            # Force layer refresh to ensure proper visual node initialization
+            layer.refresh()
             
-        # Fallback to flat shading if 'none' doesn't work
-        if hasattr(layer, 'shading'):
-            try:
-                layer.shading = 'flat'
-                return
-            except (AttributeError, ValueError) as e:
+            # Wait a bit for the refresh to complete
+            import time
+            time.sleep(0.1)
+            
+            # Try to access the visual node to ensure it's properly initialized
+            if hasattr(layer, '_node') and layer._node is not None:
+                # This should trigger proper initialization of the shading filter
                 pass
                 
-        # Final fallback to smooth shading
-        if hasattr(layer, 'shading'):
-            try:
-                layer.shading = 'smooth'
-            except (AttributeError, ValueError) as e:
-                pass
-
-    def _configure_all_surface_lighting(self):
-        """Configure lighting for all existing surface layers in the viewer."""
-        for layer in self.viewer.layers:
-            if isinstance(layer, Surface):
-                self._configure_napari_lighting(layer)
-
-    def fix_current_layer_lighting(self):
-        """Manually fix lighting for the currently selected layer."""
-        layer = self.viewer.layers.selection.active
-        if layer and isinstance(layer, Surface):
-            self._configure_napari_lighting(layer)
-        else:
-            print("No surface layer currently selected")
+        except Exception as e:
+            print(f"Warning: Could not ensure proper shading initialization for layer {layer.name}: {e}")
 
     def _on_property_changed(self, new_property: str):
         """Handle user selecting a new property from the dropdown."""
@@ -717,11 +703,8 @@ class CustomVedoCutter(VedoCutter):
         # --- CRITICAL: Embed the source path in the metadata ---
         metadata = {'source_vtp_path': filepath}
 
-        # Add surface with better lighting configuration
+        # Add surface with metadata
         surface_layer = self.viewer.add_surface(mesh_tuple, name=name, metadata=metadata)
-        
-        # Configure better lighting for napari surface using comprehensive approach
-        self._configure_napari_lighting(surface_layer)
 
     def _apply_auto_colormap(self, layer, property_name, data):
         """Automatically apply appropriate colormap based on property type ."""
@@ -831,20 +814,82 @@ class CustomVedoCutter(VedoCutter):
                 clamped_max = max(min(max_val, self.contrast_slider.max), self.contrast_slider.min)
                 self.contrast_slider.value = (clamped_min, clamped_max)
 
-    def get_from_napari(self):
-        """Override to ensure proper lighting is applied when loading meshes."""
-        # Call parent method first
-        super().get_from_napari()
-        
-        # Apply our custom lighting
-        if hasattr(self, 'mesh') and self.mesh is not None:
-            self.mesh.lighting(self.mesh_lighting)
+    def _initialize_automatic_lighting_ao(self):
+        """Initialize automatic lighting and ambient occlusion for surface layers."""
+        # Initialize lighting control if available
+        if NAPARI_THREEDEE_AVAILABLE:
+            self.lighting_control = LightingControl(self.viewer)
+            self.lighting_control.enabled = True
+        else:
+            self.lighting_control = None
 
-    def _load_mesh(self):
-        """Override to ensure proper lighting is applied when loading meshes from files."""
-        # Call parent method first
-        super()._load_mesh()
-        
-        # Apply our custom lighting
-        if hasattr(self, 'mesh') and self.mesh is not None:
-            self.mesh.lighting(self.mesh_lighting)
+        # Track layers that have been processed
+        self.processed_layers = set()
+
+    def _apply_automatic_lighting_ao(self, layer):
+        """Apply automatic lighting and ambient occlusion to a surface layer."""
+        if not isinstance(layer, Surface):
+            return
+
+        # Skip if already processed
+        if layer in self.processed_layers:
+            return
+
+        # Mark as processed
+        self.processed_layers.add(layer)
+
+        # Apply lighting control immediately (fast)
+        if self.lighting_control and NAPARI_THREEDEE_AVAILABLE:
+            try:
+                self.lighting_control.set_layers([layer])
+                print(f"Applied automatic lighting to layer: {layer.name}")
+            except Exception as e:
+                print(f"Warning: Could not apply lighting to layer {layer.name}: {e}")
+
+        # Apply ambient occlusion in background thread (slower)
+        if IGL_AVAILABLE:
+            self._apply_ambient_occlusion_background(layer)
+        else:
+            print(f"Warning: libigl not available, skipping ambient occlusion for layer: {layer.name}")
+
+    def _apply_ambient_occlusion_background(self, layer):
+        """Apply ambient occlusion in a background thread to avoid blocking the UI."""
+        def ao_worker():
+            try:
+                # Get layer data
+                if len(layer.data) == 3:
+                    vertices, faces, values = layer.data
+                else:
+                    # If no values, create default ones
+                    vertices, faces = layer.data
+                    values = np.ones(len(vertices))
+
+                # Ensure faces are integers
+                faces = faces.astype(int)
+
+                # Calculate vertex normals
+                vertex_normals = igl.per_vertex_normals(vertices, faces)
+
+                # Calculate ambient occlusion (20 sample points)
+                ao = igl.ambient_occlusion(vertices, faces, vertices, vertex_normals, 20)
+
+                # Apply attenuation
+                attenuation_factors = 1 - ao
+                attenuated_values = attenuation_factors * values
+
+                # Store original data for potential restoration
+                layer.metadata['original_ao_data'] = (vertices.copy(), faces.copy(), values.copy())
+
+                # Update layer data with AO
+                layer.data = (vertices, faces, attenuated_values)
+
+                print(f"Applied ambient occlusion to layer: {layer.name}")
+
+            except Exception as e:
+                print(f"Warning: Could not apply ambient occlusion to layer {layer.name}: {e}")
+
+        # Start background thread
+        ao_thread = threading.Thread(target=ao_worker, daemon=True)
+        ao_thread.start()
+
+
