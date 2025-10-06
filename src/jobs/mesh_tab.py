@@ -18,6 +18,7 @@ class MeshGenerationWidget(QWidget):
     def __init__(self, experiment_manager):
         super().__init__()
         self.experiment_manager = experiment_manager
+        
         self.container = widgets.Container(layout='vertical', labels=True)
         self.native = self.container.native  # Use magicgui container's native widget
         self.experiment_manager = experiment_manager
@@ -69,6 +70,7 @@ class MeshGenerationWidget(QWidget):
             self.submit_btn,
             self.status
         ])
+        
         ##testing
         # Listen for config_loaded signal to update UI on resume
         if hasattr(self.experiment_manager, 'config_loaded'):
@@ -207,27 +209,20 @@ class MeshGenerationWidget(QWidget):
             return_code = process.wait()
             if return_code == 0:
                 exp_dir = Path(self.experiment_manager.work_dir.value) / self.experiment_manager.experiment_name.currentText()
-                
-                # Enhanced file moving with better search and error handling
+                # Only move mesh files generated directly in the work directory
                 moved_files = []
-                search_locations = [exp_dir, work_dir, work_dir.parent]  # Search multiple locations
-                
-                for search_dir in search_locations:
-                    print(f"Searching for mesh files in: {search_dir}")
-                    for pattern in ['*.ply', '*.surface.vtp', '*.xyz', '**/*.ply', '**/*.surface.vtp', '**/*.xyz']:
-                        for f in search_dir.glob(pattern):
-                            if f.is_file() and f.parent != meshes_dir:  # Don't move files already in results
-                                try:
-                                    dest_path = meshes_dir / f.name
-                                    print(f"Moving {f} to {dest_path}")
-                                    f.rename(dest_path)
-                                    moved_files.append(dest_path)
-                                except Exception as e:
-                                    print(f"Error moving {f}: {e}")
-                
+                for pattern in ['*.ply', '*.surface.vtp', '*.xyz']:
+                    for f in work_dir.glob(pattern):
+                        if f.is_file():
+                            dest_path = meshes_dir / f.name
+                            try:
+                                print(f"Moving {f} to {dest_path}")
+                                f.rename(dest_path)
+                                moved_files.append(dest_path)
+                            except Exception as e:
+                                print(f"Error moving {f}: {e}")
                 # Check if files exist in results directory (whether moved or already there)
                 mesh_files = list(meshes_dir.glob('*.ply')) + list(meshes_dir.glob('*.surface.vtp')) + list(meshes_dir.glob('*.xyz'))
-                
                 if mesh_files:
                     self.status.update_status('Completed')
                     self.status.update_progress(100)

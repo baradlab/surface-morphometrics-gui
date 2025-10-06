@@ -54,3 +54,8 @@ Thumbs.db
 *.vtk
 temp/
 output/
+
+# MkDocs build output and docs artifacts
+site/
+/data1/_ghpages/
+GUI_docs/
