@@ -42,9 +42,7 @@ def main():
         pycurv_widget = PyCurvWidget(experiment_manager=experiment_manager)
         distance_widget = DistanceOrientationWidget(experiment_manager)
 
-        # Connect mesh generation completion signal to PyCurv file list refresh
-        mesh_widget.mesh_generation_complete.connect(pycurv_widget._populate_vtp_file_list)
-        print("Mesh generation complete signal connected to PyCurv file list refresh.")
+        # (Mesh completion connection set after dock widgets are created below)
         # Create tomoslice plugin
         tomoslice = TomoslicePlugin(viewer, experiment_manager)
         
@@ -78,6 +76,11 @@ def main():
         # Connect mesh generation completion signal to PyCurv file list refresh
         # (Connect after widgets are added to ensure they are fully initialized)
         mesh_widget.mesh_generation_complete.connect(pycurv_widget.on_mesh_generation_complete)
+
+        # Auto-refresh Curvature list when its dock becomes visible (tab switched to it)
+        dw3.visibilityChanged.connect(lambda visible: (
+            QtCore.QTimer.singleShot(0, pycurv_widget._populate_vtp_file_list) if visible else None
+        ))
         
         napari.run()
         
