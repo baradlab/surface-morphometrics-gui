@@ -169,7 +169,7 @@ class MeshGenerationWidget(QWidget):
         try:
             config_path, meshes_dir = self._update_config()
             work_dir = Path(self.experiment_manager.work_dir.value)
-            script_path = work_dir.parent / 'segmentation_to_meshes.py'
+            script_path = Path('/home/student/surface_test/surface_morphometrics/segmentation_to_meshes.py')
             if not script_path.exists():
                 self.status.update_status('Error')
                 print(f"Script not found: {script_path}")
