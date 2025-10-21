@@ -87,6 +87,25 @@ class PyCurvWidget(QWidget):
         else:
             print("[PyCurvWidget] ExperimentManager does not have 'config_loaded' signal.")
 
+    def _find_pycurv_script(self, start_dir: Path):
+        """Try to find run_pycurv.py relative to the experiment directory.
+        Checks common locations to handle different launch contexts.
+        """
+        candidates = [
+            start_dir / 'run_pycurv.py',
+            start_dir.parent / 'run_pycurv.py',
+            start_dir.parent.parent / 'run_pycurv.py',
+            start_dir / 'scripts' / 'run_pycurv.py',
+            start_dir.parent / 'scripts' / 'run_pycurv.py',
+        ]
+        for cand in candidates:
+            try:
+                if cand.exists():
+                    return cand
+            except Exception:
+                pass
+        return None
+
     def _on_select_all_changed(self, event=None):
         is_checked = self.select_all_vtp_checkbox_qt.isChecked()
         for checkbox in self.vtp_checkboxes:
@@ -162,24 +181,45 @@ class PyCurvWidget(QWidget):
             raise ValueError("Experiment configuration not loaded.")
 
         # Construct experiment directory the same way as mesh tab
-        exp_dir = Path(self.experiment_manager.work_dir.value) / self.experiment_manager.experiment_name.currentText()
-        config_path = exp_dir / 'config.yml'
+        exp_name = self.experiment_manager.experiment_name.currentText()
+        exp_dir = Path(self.experiment_manager.work_dir.value) / exp_name
+        # Prefer the same config naming as mesh tab; fallback to config.yml if needed
+        preferred_config_path = exp_dir / f"{exp_name}_config.yml"
+        fallback_config_path = exp_dir / 'config.yml'
+        config_path = preferred_config_path if preferred_config_path.exists() else fallback_config_path
 
-        pycurv_specific_config_data = {
-            'work_dir': str(exp_dir) + os.sep,
-            'cores': self.experiment_manager.current_config.get('cores', 1),
-            'curvature_measurements': {
-                'radius_hit': self.radius_hit_input.value,
-                'min_component': self.min_component_input.value,
-                'exclude_borders': self.exclude_borders_input.value,
-            }
-        }
-        
+        # Load existing config if present; else start with current_config snapshot
         yaml = YAML()
         yaml.preserve_quotes = True
+        existing = {}
+        if config_path.exists():
+            try:
+                with open(config_path, 'r') as f:
+                    existing = yaml.load(f) or {}
+            except Exception:
+                existing = {}
+        else:
+            # If neither exists, use preferred path for new file
+            config_path = preferred_config_path
+            existing = dict(self.experiment_manager.current_config)
+
+        # Ensure base fields are correct
+        # Add trailing separator so curvature script can concatenate "results" correctly
+        existing['work_dir'] = str(exp_dir) + os.sep
+        existing['cores'] = self.experiment_manager.current_config.get('cores', 1)
+
+        # Merge curvature settings
+        existing.setdefault('curvature_measurements', {})
+        existing['curvature_measurements'].update({
+            'radius_hit': self.radius_hit_input.value,
+            'min_component': self.min_component_input.value,
+            'exclude_borders': self.exclude_borders_input.value,
+        })
+
+        # Write back
         with open(config_path, 'w') as f:
-            yaml.dump(pycurv_specific_config_data, f)
-        
+            yaml.dump(existing, f)
+
         return config_path
 
     def _run_job(self):
@@ -199,13 +239,12 @@ class PyCurvWidget(QWidget):
         """The core worker function that runs the analysis."""
         try:
             config_path = self._update_config()
-            exp_config = self.experiment_manager.current_config
-            work_dir = Path(exp_config.get('work_dir')).resolve()
-            base_work_dir = work_dir.parent
-            pycurv_script_path = base_work_dir.parent / 'run_pycurv.py'
+            # Derive directories from the saved config path to avoid stale current_config on first run
+            work_dir = Path(config_path).parent.resolve()
+            pycurv_script_path = self._find_pycurv_script(work_dir)
 
-            if not pycurv_script_path.exists():
-                print(f"[ERROR] Script not found at {pycurv_script_path}")
+            if not pycurv_script_path:
+                print(f"[ERROR] run_pycurv.py not found relative to {work_dir}")
                 self.status.update_status('Error: run_pycurv.py not found')
                 return
 
@@ -219,7 +258,8 @@ class PyCurvWidget(QWidget):
             processed_count = 0
             success_count = 0
             lock = threading.Lock()
-            max_workers = min(exp_config.get('cores', 1), total_files)
+            # Use cores from current_config if present; default to 6
+            max_workers = min(self.experiment_manager.current_config.get('cores', 6), total_files)
             
             status_msg = f'Processing {total_files} files using {max_workers} workers...'
             self.status.update_status(status_msg)

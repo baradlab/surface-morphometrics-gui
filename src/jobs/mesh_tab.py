@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import subprocess
 import sys
 import os
@@ -186,7 +187,8 @@ class MeshGenerationWidget(QWidget):
                 bufsize=1,
                 universal_newlines=True,
                 env=my_env,
-                cwd=str(work_dir)
+                # Run inside the experiment directory to avoid picking up sibling experiments
+                cwd=str(Path(self.experiment_manager.work_dir.value) / self.experiment_manager.experiment_name.currentText())
             )
             progress = 0
             if process.stdout is not None:
@@ -209,24 +211,32 @@ class MeshGenerationWidget(QWidget):
             return_code = process.wait()
             if return_code == 0:
                 exp_dir = Path(self.experiment_manager.work_dir.value) / self.experiment_manager.experiment_name.currentText()
-                # Only move mesh files generated directly in the work directory
+                work_dir = Path(self.experiment_manager.work_dir.value)
+                
+                # Check both work directory and experiment directory for mesh files
                 moved_files = []
+                search_dirs = [exp_dir, work_dir]
+                
                 for pattern in ['*.ply', '*.surface.vtp', '*.xyz']:
-                    for f in work_dir.glob(pattern):
-                        if f.is_file():
-                            dest_path = meshes_dir / f.name
-                            try:
-                                print(f"Moving {f} to {dest_path}")
-                                f.rename(dest_path)
-                                moved_files.append(dest_path)
-                            except Exception as e:
-                                print(f"Error moving {f}: {e}")
+                    for search_dir in search_dirs:
+                        if search_dir.exists():
+                            for f in search_dir.glob(pattern):
+                                if f.is_file():
+                                    # Sanitize filename: remove any accidental leading digits before letters
+                                    sanitized_name = re.sub(r'^[0-9]+(?=[A-Za-z])', '', f.name)
+                                    dest_path = meshes_dir / sanitized_name
+                                    try:
+                                        f.rename(dest_path)
+                                        moved_files.append(dest_path)
+                                    except Exception as e:
+                                        print(f"Error moving {f}: {e}")
+                
                 # Check if files exist in results directory (whether moved or already there)
                 mesh_files = list(meshes_dir.glob('*.ply')) + list(meshes_dir.glob('*.surface.vtp')) + list(meshes_dir.glob('*.xyz'))
                 if mesh_files:
                     self.status.update_status('Completed')
                     self.status.update_progress(100)
-                    print(f"Mesh generation completed. Files in results: {[f.name for f in mesh_files]}")
+                    print(f"Added {len(moved_files)} files to results")
                     # Emit signal that mesh generation is complete - this will trigger other tabs to refresh
                     QTimer.singleShot(100, lambda: self.mesh_generation_complete.emit())
                 else:
