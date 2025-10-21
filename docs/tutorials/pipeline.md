@@ -73,4 +73,4 @@ In this step, the system measures the intra-inter surface distances and orientat
 - Adjust the measurement parameters as needed for your specific analysis requirements
 - Configure distance thresholds and tolerance
 
-![Distance and Orientation]()
+![Distance and Orientation]()<!-- Updated Tue Oct 21 03:48:18 PM PDT 2025 -->
