@@ -34,7 +34,7 @@ python main.py
 
 Once the GUI is loaded, you'll see the experiment manager panel on the right side. Here's how to set up a new experiment:
 
-1. **Work Directory**: Choose where all experiment-related data and produced results will be saved
+1. **Work Directory**: Select a location where all experiment-related data and results will be saved. For best results, create a new folder inside the surface-morphometrics directory and set that as your Work Directory.
 2. **Experiment Name**: Give your experiment a descriptive name
 3. **Data Directory**: Select the location of your dataset that you want to analyze with surface morphometrics
 4. **Config Template**: Choose the master configuration template (this will be edited through the GUI for your specific experiment)
@@ -73,4 +73,4 @@ In this step, the system measures the intra-inter surface distances and orientat
 - Adjust the measurement parameters as needed for your specific analysis requirements
 - Configure distance thresholds and tolerance
 
-![Distance and Orientation]()
+![Distance and Orientation]()<!-- Updated Tue Oct 21 03:48:18 PM PDT 2025 -->
