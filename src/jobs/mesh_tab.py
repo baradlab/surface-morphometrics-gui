@@ -7,7 +7,7 @@ from magicgui import widgets
 from widgets.job_status import JobStatusWidget
 from ruamel.yaml import YAML
 from qtpy.QtCore import QTimer, Signal, QObject
-from qtpy.QtWidgets import QWidget
+from qtpy.QtWidgets import QWidget, QMessageBox
 import threading
 
 class MeshGenerationWidget(QWidget):
@@ -161,20 +161,43 @@ class MeshGenerationWidget(QWidget):
 
     def _run_job(self):
         """Run surface mesh generation"""
+        
+        # Strict script location check
+        # Force reload config from disk to catch manual edits
+        self.experiment_manager._load_existing_experiment_config()
+        config = getattr(self.experiment_manager, 'current_config', {})
+        script_location = config.get('script_location')
+        
+        script_path = None
+        if script_location:
+             script_path = Path(script_location) / 'segmentation_to_meshes.py'
+        
+        if not script_path or not script_path.exists():
+            error_msg = (
+                "Script 'segmentation_to_meshes.py' not found.\n\n"
+                "Please make sure to place the config file you are using as a template "
+                "in the Surface Morphometrics directory.\n\n"
+                "If it is already placed there, please check the 'script_location' path "
+                "in the experiment-specific config file.\n\n"
+                f"Checked location: {script_path if script_path else 'Not defined'}"
+            )
+            QMessageBox.critical(self, "Script Not Found", error_msg)
+            print(f"[Error] {error_msg}")
+            return
+
         self.submit_btn.enabled = False
         self.status.update_status('Running')
-        threading.Thread(target=self._run_job_worker, daemon=True).start()
+        # Pass the validated script_path to the worker
+        threading.Thread(target=self._run_job_worker, args=(script_path,), daemon=True).start()
 
-    def _run_job_worker(self):
+    def _run_job_worker(self, script_path):
         try:
             config_path, meshes_dir = self._update_config()
             work_dir = Path(self.experiment_manager.work_dir.value)
-            script_path = work_dir.parent / 'segmentation_to_meshes.py'
-            if not script_path.exists():
-                self.status.update_status('Error')
-                print(f"Script not found: {script_path}")
-                QTimer.singleShot(0, self._job_cleanup)
-                return
+            
+            # Using the passed script_path which is already validated
+            pass # just a placeholder to keep indentation valid if needed, but we can just use script_path directly safely now
+            
             cmd = [sys.executable, str(script_path), str(config_path)]
             print(f"Running: {' '.join(map(str, cmd))}")
             my_env = os.environ.copy()

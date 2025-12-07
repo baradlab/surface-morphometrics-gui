@@ -9,7 +9,7 @@ from pathlib import Path
 from magicgui import widgets
 from qtpy.QtCore import QTimer
 from ruamel.yaml import YAML
-from qtpy.QtWidgets import QScrollArea, QWidget, QVBoxLayout, QCheckBox, QLabel, QPushButton, QHBoxLayout
+from qtpy.QtWidgets import QScrollArea, QWidget, QVBoxLayout, QCheckBox, QLabel, QPushButton, QHBoxLayout, QMessageBox
 
 # This assumes you have a JobStatusWidget defined elsewhere in your project.
 from widgets.job_status import JobStatusWidget
@@ -91,13 +91,19 @@ class PyCurvWidget(QWidget):
         """Try to find run_pycurv.py relative to the experiment directory.
         Checks common locations to handle different launch contexts.
         """
-        candidates = [
+        candidates = []
+        
+        # Check script_location from config first
+        if self.experiment_manager.current_config and 'script_location' in self.experiment_manager.current_config:
+            candidates.append(Path(self.experiment_manager.current_config['script_location']) / 'run_pycurv.py')
+            
+        candidates.extend([
             start_dir / 'run_pycurv.py',
             start_dir.parent / 'run_pycurv.py',
             start_dir.parent.parent / 'run_pycurv.py',
             start_dir / 'scripts' / 'run_pycurv.py',
             start_dir.parent / 'scripts' / 'run_pycurv.py',
-        ]
+        ])
         for cand in candidates:
             try:
                 if cand.exists():
@@ -228,38 +234,85 @@ class PyCurvWidget(QWidget):
             print("[PyCurvWidget] A job is already in progress. Please wait.")
             return
 
+        # Save current settings to config file
+        try:
+            config_path = self._update_config()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to update config: {e}")
+            return
+            
+        # Strict script location check
+        script_location = None
+        try:
+            yaml = YAML()
+            with open(config_path, 'r') as f:
+                loaded_config = yaml.load(f) or {}
+            script_location = loaded_config.get('script_location')
+        except Exception as e:
+            print(f"[PyCurvWidget] Error reading config for script_location: {e}")
+        
+        script_path = None
+        if script_location:
+             script_path = Path(script_location) / 'run_pycurv.py'
+        
+        if not script_path or not script_path.exists():
+            error_msg = (
+                "Script 'run_pycurv.py' not found.\n\n"
+                "Please make sure to place the config file you are using as a template "
+                "in the Surface Morphometrics directory.\n\n"
+                "If it is already placed there, please check the 'script_location' path "
+                "in the experiment-specific config file.\n\n"
+                f"Checked location: {script_path if script_path else 'Not defined'}"
+            )
+            QMessageBox.critical(self, "Script Not Found", error_msg)
+            print(f"[Error] {error_msg}")
+            return
+
+        # Collect data from UI in the main thread
+        selected_vtp_files = sorted(list(set([cb.file_path for cb in self.vtp_checkboxes if cb.isChecked()])))
+        
+        if not selected_vtp_files:
+            QMessageBox.warning(self, "No Files", "No VTP files selected.")
+            return
+
+        # Get number of cores
+        cores = self.experiment_manager.current_config.get('cores', 6)
+
         self.is_running = True
         self.submit_btn.enabled = False
         self.status.update_status('Running...')
         self.status.update_progress(0)
         
-        threading.Thread(target=self._run_job_worker, daemon=True).start()
+        # Pass all necessary data to worker
+        job_data = {
+            'script_path': script_path,
+            'config_path': config_path,
+            'files': selected_vtp_files,
+            'cores': cores
+        }
+        
+        threading.Thread(target=self._run_job_worker, args=(job_data,), daemon=True).start()
 
-    def _run_job_worker(self):
+    def _run_job_worker(self, job_data):
         """The core worker function that runs the analysis."""
         try:
-            config_path = self._update_config()
+            pycurv_script_path = job_data['script_path']
+            config_path = job_data['config_path']
+            selected_vtp_files = job_data['files']
+            max_workers = min(job_data['cores'], len(selected_vtp_files))
+            
             # Derive directories from the saved config path to avoid stale current_config on first run
             work_dir = Path(config_path).parent.resolve()
-            pycurv_script_path = self._find_pycurv_script(work_dir)
-
-            if not pycurv_script_path:
-                print(f"[ERROR] run_pycurv.py not found relative to {work_dir}")
+            
+            if not pycurv_script_path.exists(): # Double check just in case
+                print(f"[ERROR] run_pycurv.py not found at {pycurv_script_path}")
                 self.status.update_status('Error: run_pycurv.py not found')
-                return
-
-            selected_vtp_files = sorted(list(set([cb.file_path for cb in self.vtp_checkboxes if cb.isChecked()])))
-
-            if not selected_vtp_files:
-                self.status.update_status('No VTP files selected')
                 return
 
             total_files = len(selected_vtp_files)
             processed_count = 0
             success_count = 0
             lock = threading.Lock()
-            # Use cores from current_config if present; default to 6
-            max_workers = min(self.experiment_manager.current_config.get('cores', 6), total_files)
             
             status_msg = f'Processing {total_files} files using {max_workers} workers...'
             self.status.update_status(status_msg)
@@ -327,7 +380,7 @@ class PyCurvWidget(QWidget):
         """Reset the UI after the job is finished."""
         self.submit_btn.enabled = True
         self.is_running = False
-        self._populate_vtp_file_list()
+        # Do not auto-refresh list here, as it clears selection
 
     def on_mesh_generation_complete(self):
         """Handle mesh generation completion signal in a thread-safe way"""

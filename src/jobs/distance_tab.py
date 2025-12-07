@@ -10,6 +10,7 @@ from pathlib import Path
 from magicgui import widgets
 from qtpy.QtCore import QTimer
 from ruamel.yaml import YAML
+from qtpy.QtWidgets import QMessageBox
 
 # These are assumed to be in your project structure
 from morphometrics_config import IntraListEditor, InterDictEditor
@@ -98,29 +99,41 @@ class DistanceOrientationWidget(widgets.Container):
             print(f"[DistanceOrientationWidget] Error in _on_config_loaded: {e}")
 
     def _update_config(self):
-        """
-        Creates a modified config where 'work_dir' points to the 'results'
-        directory. This part of the solution is correct.
-        """
+        """Update the YAML config file with current widget values."""
         if not self.experiment_manager or not self.experiment_manager.current_config:
             raise ValueError("Experiment configuration not loaded.")
 
-        exp_config = copy.deepcopy(self.experiment_manager.current_config)
+        exp_name = self.experiment_manager.experiment_name.currentText()
+        exp_dir = Path(self.experiment_manager.work_dir.value) / exp_name
         
-        work_dir_in_config = exp_config.get('work_dir')
-        if not work_dir_in_config:
-            raise ValueError("Work directory not found in config.")
+        # Prefer the same config naming as mesh tab; fallback to config.yml if needed
+        preferred_config_path = exp_dir / f"{exp_name}_config.yml"
+        fallback_config_path = exp_dir / 'config.yml'
+        config_path = preferred_config_path if preferred_config_path.exists() else fallback_config_path
 
-        exp_dir = Path(work_dir_in_config).resolve()
-        config_path = exp_dir / 'config.yml'
+        # Load existing config if present; else start with current_config snapshot
+        yaml = YAML()
+        yaml.preserve_quotes = True
+        existing = {}
+        if config_path.exists():
+            try:
+                with open(config_path, 'r') as f:
+                    existing = yaml.load(f) or {}
+            except Exception:
+                existing = {}
+        else:
+            # If neither exists, use preferred path for new file (matching PyCurv behavior)
+            config_path = preferred_config_path
+            existing = copy.deepcopy(self.experiment_manager.current_config)
+
+        # Distance tab specific: work_dir should point to results
         results_dir = exp_dir / 'results'
         results_dir.mkdir(exist_ok=True)
+        existing['work_dir'] = str(results_dir) + os.sep
         
-        # This is correct: The script needs work_dir to point to the results directory.
-        exp_config['work_dir'] = str(results_dir) + os.sep
-        
-        distance_settings = exp_config.get('distance_and_orientation_measurements', {})
-        distance_settings.update({
+        # Merge distance settings
+        existing.setdefault('distance_and_orientation_measurements', {})
+        existing['distance_and_orientation_measurements'].update({
             'mindist': self.min_dist.value,
             'maxdist': self.max_dist.value,
             'tolerance': self.tolerance.value,
@@ -129,12 +142,9 @@ class DistanceOrientationWidget(widgets.Container):
             'intra': self.intra_editor.get_values(),
             'inter': self.inter_editor.get_values()
         })
-        exp_config['distance_and_orientation_measurements'] = distance_settings
-        
-        yaml = YAML()
-        yaml.preserve_quotes = True
+
         with open(config_path, 'w') as f:
-            yaml.dump(exp_config, f)
+            yaml.dump(existing, f)
         
         return config_path
 
@@ -143,30 +153,75 @@ class DistanceOrientationWidget(widgets.Container):
         if self.is_running:
             return
 
+        # Strict script location check
+        try:
+            config_path = self._update_config()
+        except FileNotFoundError as e:
+            QMessageBox.critical(self.native, "Config Missing", str(e))
+            return
+        except Exception as e:
+            QMessageBox.critical(self.native, "Error", f"Failed to update config: {e}")
+            return
+
+        # Manually read config to find script_location without triggering global refresh
+        script_location = None
+        try:
+            yaml = YAML()
+            with open(config_path, 'r') as f:
+                loaded_config = yaml.load(f) or {}
+            script_location = loaded_config.get('script_location')
+        except Exception as e:
+            print(f"[DistanceWidget] Error reading config for script_location: {e}")
+        
+        script_path = None
+        if script_location:
+             script_path = Path(script_location) / 'measure_distances_orientations.py'
+        
+        if not script_path or not script_path.exists():
+            error_msg = (
+                "Script 'measure_distances_orientations.py' not found.\n\n"
+                "Please make sure to place the config file you are using as a template "
+                "in the Surface Morphometrics directory.\n\n"
+                "If it is already placed there, please check the 'script_location' path "
+                "in the experiment-specific config file.\n\n"
+                f"Checked location: {script_path if script_path else 'Not defined'}"
+            )
+            QMessageBox.critical(self.native, "Script Not Found", error_msg)
+            print(f"[Error] {error_msg}")
+            return
+
+        # Prepare job data
+        job_data = {
+            'script_path': script_path,
+            'config_path': config_path,
+            'cores': cores
+        }
+
         self.is_running = True
         self.submit_btn.enabled = False
         self.status.update_status('Starting...')
         self.status.update_progress(0)
 
-        threading.Thread(target=self._run_job_worker, daemon=True).start()
+        threading.Thread(target=self._run_job_worker, args=(job_data,), daemon=True).start()
 
-    def _run_job_worker(self):
+    def _run_job_worker(self, job_data):
         """The core worker function that runs the analysis."""
         try:
-            config_path = self._update_config()
+            # Unpack data
+            script_path = job_data['script_path']
+            config_path = job_data['config_path']
             
-            exp_config = self.experiment_manager.current_config
-            work_dir = Path(exp_config.get('work_dir')).resolve()
+            # Read config again in thread to get paths (safe, reading file)
+            yaml = YAML()
+            with open(config_path, 'r') as f:
+                exp_config = yaml.load(f)
+                
+            # Note: _update_config set 'work_dir' to the results directory in the saved file.
+            work_dir = Path(exp_config.get('work_dir')).resolve() 
             data_dir = Path(exp_config.get('data_dir')).resolve()
 
-            # Look for the script relative to the work directory
-            script_paths = [
-                work_dir.parent / 'measure_distances_orientations.py',
-                work_dir.parent.parent / 'measure_distances_orientations.py',
-            ]
-            script_path = next((path for path in script_paths if path.exists()), None)
-            
-            if not script_path:
+            # Using passed script_path
+            if not script_path.exists():
                 self.status.update_status('Error: measure_distances_orientations.py not found')
                 return
 
@@ -188,7 +243,13 @@ class DistanceOrientationWidget(widgets.Container):
                 Processes a single file using a temporary symlink to trick
                 the script into generating the correct filenames.
                 """
-                exp_name = work_dir.name  # This will be "5"
+
+                
+                exp_name = work_dir.parent.name
+                if work_dir.name != 'results':
+                     # Fallback if structure is different
+                     exp_name = work_dir.name
+                
                 link_name = f"{exp_name}{mrc_file.name}"
                 link_path = data_dir / link_name
                 
