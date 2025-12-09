@@ -687,6 +687,7 @@ class ExperimentManager(QWidget):
             config_data['exp_name'] = experiment_name  # Add experiment name to config
             config_data['cores'] = self.cores_input.value()  # Add cores to config
             config_data['segmentation_values'] = self.segmentation_container.get_values()  # Add segmentation values to config
+            config_data['script_location'] = str(config_template_path.parent) # Add script location to config
 
             # Save the modified config to the new location
             with open(new_config_path, 'w') as f:
