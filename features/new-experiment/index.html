@@ -371,6 +371,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#important-note-on-scripts" class="md-nav__link">
+    <span class="md-ellipsis">
+      Important Note on Scripts
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#resume-an-existing-experiment" class="md-nav__link">
     <span class="md-ellipsis">
       Resume an existing experiment
@@ -585,6 +594,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#important-note-on-scripts" class="md-nav__link">
+    <span class="md-ellipsis">
+      Important Note on Scripts
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#resume-an-existing-experiment" class="md-nav__link">
     <span class="md-ellipsis">
       Resume an existing experiment
@@ -648,6 +666,13 @@
 <li>Pick a <strong>Config Template File</strong>. The template is read and the UI (including segmentation values, if present) is populated so you can review/edit before creation.</li>
 <li>Click <strong>New Experiment</strong>.</li>
 </ol>
+<h3 id="important-note-on-scripts">Important Note on Scripts<a class="headerlink" href="#important-note-on-scripts" title="Permanent link">&para;</a></h3>
+<blockquote>
+<p>[!IMPORTANT]
+The GUI automatically detects the location of the analysis scripts based on where your <strong>Config Template File</strong> is located. 
+Therefore, it is <strong>crucial</strong> that you keep your config template file inside the <code>surface_morphometrics</code> directory (the main repository containing the scripts).
+If you move the config file elsewhere, the GUI may not be able to find the necessary scripts to run your experiments.</p>
+</blockquote>
 <p><strong>What happens under the hood</strong>:</p>
 <ul>
 <li>A folder named after your Experiment Name is created inside the Work Directory.</li>
@@ -660,6 +685,7 @@
 <li><code>exp_name</code>: your Experiment Name</li>
 <li><code>cores</code>: value from the Cores input</li>
 <li><code>segmentation_values</code>: values from the Segmentation section in the UI</li>
+<li><code>script_location</code>: the directory containing the original config template (auto-detected)</li>
 <li>On success, a confirmation message is shown. If any step fails (e.g., missing paths or invalid YAML), an error dialog explains what went wrong.</li>
 </ul>
 </li>

@@ -385,6 +385,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#rerunning-jobs" class="md-nav__link">
+    <span class="md-ellipsis">
+      Rerunning Jobs
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#how-tabs-update-on-resume" class="md-nav__link">
     <span class="md-ellipsis">
       How tabs update on resume
@@ -558,6 +567,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#rerunning-jobs" class="md-nav__link">
+    <span class="md-ellipsis">
+      Rerunning Jobs
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#how-tabs-update-on-resume" class="md-nav__link">
     <span class="md-ellipsis">
       How tabs update on resume
@@ -600,9 +618,17 @@
 <h3 id="what-gets-loaded">What gets loaded<a class="headerlink" href="#what-gets-loaded" title="Permanent link">&para;</a></h3>
 <ul>
 <li>Loads <code>&lt;exp_dir&gt;/*_config.yml</code>, or falls back to <code>&lt;exp_dir&gt;/config.yml</code>.</li>
-<li>Applies to the UI when present: <code>data_dir</code>, <code>config_template</code> (or uses the loaded config path), <code>cores</code>, <code>segmentation_values</code>.</li>
+<li>Applies to the UI when present: <code>data_dir</code>, <code>config_template</code> (or uses the loaded config path), <code>cores</code>, <code>segmentation_values</code>, <code>script_location</code>.</li>
 <li>Emits a global <code>config_loaded</code> event so job tabs refresh.</li>
 </ul>
+<h3 id="rerunning-jobs">Rerunning Jobs<a class="headerlink" href="#rerunning-jobs" title="Permanent link">&para;</a></h3>
+<p>When you run a job (Mesh Generation, PyCurv, Distance) on an experiment that already has results:
+1. The system detects existing files (e.g., <code>*.ply</code>, <code>*.csv</code> in the results folder).
+2. A popup asks: <strong>"Result files were found... Overwrite or Archive?"</strong>
+    - <strong>Overwrite</strong>: Deletes old files matching the job's key extensions and runs the new job.
+    - <strong>Archive</strong>: Moves old files to a timestamped folder (e.g., <code>results/archive_20241208_120000/</code>) and saves a snapshot of the current config there. Then runs the new job.
+    - <strong>Cancel</strong>: Aborts the run.
+- This ensures you never accidentally lose data when re-trying parameters.</p>
 <h3 id="how-tabs-update-on-resume">How tabs update on resume<a class="headerlink" href="#how-tabs-update-on-resume" title="Permanent link">&para;</a></h3>
 <ul>
 <li><strong>Mesh Generation</strong><ul>

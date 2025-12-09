@@ -1,9 +1,0 @@
-napari-threedee
-napari-vedo-bridge
-magicgui
-qtpy
-ruamel.yaml
-vtk
-numpy
-pathlib
-libigl<2.5.0
