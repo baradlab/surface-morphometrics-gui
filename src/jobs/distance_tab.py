@@ -11,6 +11,7 @@ from magicgui import widgets
 from qtpy.QtCore import QTimer
 from ruamel.yaml import YAML
 from qtpy.QtWidgets import QMessageBox
+from utils.archive_utils import check_and_archive_outputs
 
 # These are assumed to be in your project structure
 from morphometrics_config import IntraListEditor, InterDictEditor
@@ -190,11 +191,24 @@ class DistanceOrientationWidget(widgets.Container):
             print(f"[Error] {error_msg}")
             return
 
+        # Archive Check (Targets 'measurements' as this is the primary output)
+        try:
+             work_dir = Path(self.experiment_manager.work_dir.value)
+             exp_name = self.experiment_manager.experiment_name.currentText()
+             exp_dir = work_dir / exp_name
+             config_path = exp_dir / f"{exp_name}_config.yml"
+             results_dir = exp_dir / 'results'
+             
+             if not check_and_archive_outputs(self.native, results_dir, config_path=config_path, file_patterns=['*.csv', '*.svg', '*.png'], exclude_patterns=['*AVV*', '*VV*', '*.gt', '*_runtimes.csv']):
+                 return
+        except Exception as e:
+             print(f"Archive check failed: {e}")
+             pass
+
         # Prepare job data
         job_data = {
             'script_path': script_path,
-            'config_path': config_path,
-            'cores': cores
+            'config_path': config_path
         }
 
         self.is_running = True

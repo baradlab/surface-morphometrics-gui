@@ -9,6 +9,7 @@ from ruamel.yaml import YAML
 from qtpy.QtCore import QTimer, Signal, QObject
 from qtpy.QtWidgets import QWidget, QMessageBox
 import threading
+from utils.archive_utils import check_and_archive_outputs
 
 class MeshGenerationWidget(QWidget):
     """Widget for surface mesh generation settings"""
@@ -183,6 +184,20 @@ class MeshGenerationWidget(QWidget):
             )
             QMessageBox.critical(self, "Script Not Found", error_msg)
             print(f"[Error] {error_msg}")
+            return
+
+        # Check for existing results and prompt specifically for Mesh Generation (Archives ALL)
+        work_dir = Path(self.experiment_manager.work_dir.value)
+        results_dir = work_dir / self.experiment_manager.experiment_name.currentText() / 'results'
+        
+        # Resolve config path for snapshot
+        config_path_to_pass = None
+        potential_config_path = work_dir / f"{self.experiment_manager.experiment_name.currentText()}_config.yml"
+        if potential_config_path.exists():
+            config_path_to_pass = potential_config_path
+            
+        if not check_and_archive_outputs(self, results_dir, config_path=config_path_to_pass, targets='all'):
+            self.status.update_status('Cancelled')
             return
 
         self.submit_btn.enabled = False

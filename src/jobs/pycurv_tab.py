@@ -10,6 +10,7 @@ from magicgui import widgets
 from qtpy.QtCore import QTimer
 from ruamel.yaml import YAML
 from qtpy.QtWidgets import QScrollArea, QWidget, QVBoxLayout, QCheckBox, QLabel, QPushButton, QHBoxLayout, QMessageBox
+from utils.archive_utils import check_and_archive_outputs
 
 # This assumes you have a JobStatusWidget defined elsewhere in your project.
 from widgets.job_status import JobStatusWidget
@@ -267,6 +268,21 @@ class PyCurvWidget(QWidget):
             QMessageBox.critical(self, "Script Not Found", error_msg)
             print(f"[Error] {error_msg}")
             return
+
+        # Archive check for PyCurv (Targets 'measurements' to keep data clean)
+        try:
+             work_dir = Path(self.experiment_manager.work_dir.value)
+             exp_name = self.experiment_manager.experiment_name.currentText()
+             exp_dir = work_dir / exp_name
+             config_path = exp_dir / f"{exp_name}_config.yml"
+             results_dir = exp_dir / 'results'
+     
+             if not check_and_archive_outputs(self, results_dir, config_path=config_path, file_patterns=['*AVV*', '*VV*', '*.log', '*.csv', '*.gt', '*.svg', '*.png']):
+                 print("User cancelled.")
+                 return
+        except Exception as e:
+            print(f"Archive check failed: {e}")
+            pass
 
         # Collect data from UI in the main thread
         selected_vtp_files = sorted(list(set([cb.file_path for cb in self.vtp_checkboxes if cb.isChecked()])))
