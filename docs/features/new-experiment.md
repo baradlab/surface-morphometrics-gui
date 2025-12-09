@@ -22,6 +22,12 @@ The "New Experiment" (or "Resume Experiment") button enables only when all of th
 4. Pick a **Config Template File**. The template is read and the UI (including segmentation values, if present) is populated so you can review/edit before creation.
 5. Click **New Experiment**.
 
+### Important Note on Scripts
+> [!IMPORTANT]
+> The GUI automatically detects the location of the analysis scripts based on where your **Config Template File** is located. 
+> Therefore, it is **crucial** that you keep your config template file inside the `surface_morphometrics` directory (the main repository containing the scripts).
+> If you move the config file elsewhere, the GUI may not be able to find the necessary scripts to run your experiments.
+
 **What happens under the hood**:
 
 - A folder named after your Experiment Name is created inside the Work Directory.
@@ -33,6 +39,7 @@ The "New Experiment" (or "Resume Experiment") button enables only when all of th
     - `exp_name`: your Experiment Name
     - `cores`: value from the Cores input
     - `segmentation_values`: values from the Segmentation section in the UI
+    - `script_location`: the directory containing the original config template (auto-detected)
 - On success, a confirmation message is shown. If any step fails (e.g., missing paths or invalid YAML), an error dialog explains what went wrong.
 
 ### Resume an existing experiment

@@ -9,8 +9,17 @@ Pick up where you left off. This page explains how resume is detected, what stat
 
 ### What gets loaded
 - Loads `<exp_dir>/*_config.yml`, or falls back to `<exp_dir>/config.yml`.
-- Applies to the UI when present: `data_dir`, `config_template` (or uses the loaded config path), `cores`, `segmentation_values`.
+- Applies to the UI when present: `data_dir`, `config_template` (or uses the loaded config path), `cores`, `segmentation_values`, `script_location`.
 - Emits a global `config_loaded` event so job tabs refresh.
+
+### Rerunning Jobs
+When you run a job (Mesh Generation, PyCurv, Distance) on an experiment that already has results:
+1. The system detects existing files (e.g., `*.ply`, `*.csv` in the results folder).
+2. A popup asks: **"Result files were found... Overwrite or Archive?"**
+    - **Overwrite**: Deletes old files matching the job's key extensions and runs the new job.
+    - **Archive**: Moves old files to a timestamped folder (e.g., `results/archive_20241208_120000/`) and saves a snapshot of the current config there. Then runs the new job.
+    - **Cancel**: Aborts the run.
+- This ensures you never accidentally lose data when re-trying parameters.
 
 ### How tabs update on resume
 - **Mesh Generation**
