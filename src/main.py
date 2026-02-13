@@ -3,6 +3,11 @@ from magicgui import widgets
 from qtpy.QtWidgets import QTabWidget, QSizePolicy, QApplication
 from qtpy import QtCore
 import logging
+import warnings
+
+# Filter out VisPy/macOS specific warnings that are harmless
+warnings.filterwarnings("ignore", message="Back buffer dpr of .* doesn't match .* contents scale of .*")
+
 logging.basicConfig(level=logging.INFO)
 
 from jobs.mesh_tab import MeshGenerationWidget
