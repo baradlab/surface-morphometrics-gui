@@ -35,7 +35,7 @@ class PyCurvWidget(QWidget):
         settings_container = widgets.Container(layout='vertical', labels=True)
         settings_container.native.layout().setSpacing(5)
         settings_container.native.layout().setContentsMargins(3, 3, 3, 3)
-        self.radius_hit_input = widgets.SpinBox(value=8, min=1, max=20, label='Radius Hit')
+        self.radius_hit_input = widgets.SpinBox(value=9, min=1, max=20, label='Radius Hit')
         self.min_component_input = widgets.SpinBox(value=30, min=1, max=1000, label='Min Component')
         self.exclude_borders_input = widgets.SpinBox(value=1, min=0, max=100, label='Exclude Borders')
         settings_container.extend([
@@ -269,27 +269,44 @@ class PyCurvWidget(QWidget):
             print(f"[Error] {error_msg}")
             return
 
-        # Archive check for PyCurv (Targets 'measurements' to keep data clean)
-        try:
-             work_dir = Path(self.experiment_manager.work_dir.value)
-             exp_name = self.experiment_manager.experiment_name.currentText()
-             exp_dir = work_dir / exp_name
-             config_path = exp_dir / f"{exp_name}_config.yml"
-             results_dir = exp_dir / 'results'
-     
-             if not check_and_archive_outputs(self, results_dir, config_path=config_path, file_patterns=['*AVV*', '*VV*', '*.log', '*.csv', '*.gt', '*.svg', '*.png']):
-                 print("User cancelled.")
-                 return
-        except Exception as e:
-            print(f"Archive check failed: {e}")
-            pass
-
         # Collect data from UI in the main thread
         selected_vtp_files = sorted(list(set([cb.file_path for cb in self.vtp_checkboxes if cb.isChecked()])))
         
         if not selected_vtp_files:
             QMessageBox.warning(self, "No Files", "No VTP files selected.")
             return
+
+        # Archive check for PyCurv (Targets 'measurements' to keep data clean)
+        # We now generate specific patterns for the selected files to avoid false positive prompts
+        try:
+             work_dir = Path(self.experiment_manager.work_dir.value)
+             exp_name = self.experiment_manager.experiment_name.currentText()
+             exp_dir = work_dir / exp_name
+             results_dir = exp_dir / 'results'
+             
+             # Generate specific patterns for selected files
+             base_patterns = ['*AVV*', '*VV*', '*.log', '*.csv', '*.gt', '*.svg', '*.png']
+             specific_patterns = []
+             
+             for vtp_path in selected_vtp_files:
+                 # Extract stem: remove .surface.vtp or .SURFACE.VTP
+                 fname = Path(vtp_path).name
+                 stem = fname.replace('.surface.vtp', '').replace('.SURFACE.VTP', '')
+                 # Add patterns for this stem
+                 for pattern in base_patterns:
+                     specific_patterns.append(f"{stem}{pattern}")
+             
+             # Use specific patterns if we have selected files, otherwise fallback 
+             patterns_to_check = specific_patterns if specific_patterns else base_patterns
+
+             if not check_and_archive_outputs(self, results_dir, config_path=config_path, file_patterns=patterns_to_check):
+                 print("User cancelled.")
+                 return
+        except Exception as e:
+            print(f"Archive check failed: {e}")
+            import traceback
+            traceback.print_exc()
+            pass
 
         # Get number of cores
         cores = self.experiment_manager.current_config.get('cores', 6)

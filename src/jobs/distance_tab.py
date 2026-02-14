@@ -37,8 +37,8 @@ class DistanceOrientationWidget(widgets.Container):
         settings.native.layout().setContentsMargins(3, 3, 3, 3)
 
         # Settings widgets
-        self.min_dist = widgets.SpinBox(value=3, min=0, max=1000, label='Min Distance')
-        self.max_dist = widgets.SpinBox(value=400, min=0, max=1000, label='Max Distance')
+        self.min_dist = widgets.FloatSpinBox(value=3.0, min=0.0, max=1000.0, step=0.1, label='Min Distance')
+        self.max_dist = widgets.FloatSpinBox(value=400.0, min=0.0, max=1000.0, step=0.1, label='Max Distance')
         self.tolerance = widgets.FloatSpinBox(value=0.1, min=0.0, max=1.0, step=0.01, label='Tolerance')
         self.verticality = widgets.CheckBox(value=True, label='Measure Verticality')
         self.relative_orientation = widgets.CheckBox(value=True, label='Measure Relative Orientation')

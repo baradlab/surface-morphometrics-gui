@@ -37,14 +37,14 @@ class MeshGenerationWidget(QWidget):
         
         # Create settings widgets
         self.angstroms = widgets.CheckBox(value=False, label='Angstrom Scaling')
-        self.ultrafine = widgets.CheckBox(value=False, label='Ultrafine Surface (High Quality, Slow)')
-        self.mesh_sampling = widgets.SpinBox(value=1, min=1, max=10, label='Mesh Sampling Rate')
-        self.simplify = widgets.CheckBox(value=True, label='Simplify Surface')
-        self.max_triangles = widgets.SpinBox(value=100000, min=1000, max=1000000, label='Max Triangles')
+        self.ultrafine = widgets.CheckBox(value=True, label='Ultrafine Surface (High Quality, Slow)')
+        self.mesh_sampling = widgets.FloatSpinBox(value=0.99, min=0.1, max=10.0, step=0.01, label='Mesh Sampling Rate')
+        self.simplify = widgets.CheckBox(value=False, label='Simplify Surface')
+        self.max_triangles = widgets.SpinBox(value=300000, min=1000, max=1000000, label='Max Triangles')
         self.extrapolation_distance = widgets.FloatSpinBox(value=1.5, min=0.1, max=10.0, step=0.1, label='Extrapolation Distance')
-        self.octree_depth = widgets.SpinBox(value=9, min=1, max=15, label='Octree Depth')
+        self.octree_depth = widgets.SpinBox(value=7, min=1, max=15, label='Octree Depth')
         self.point_weight = widgets.FloatSpinBox(value=0.7, min=0.1, max=1.0, step=0.1, label='Point Weight')
-        self.neighbor_count = widgets.SpinBox(value=300, min=10, max=1000, label='Neighbor Count')
+        self.neighbor_count = widgets.SpinBox(value=400, min=10, max=1000, label='Neighbor Count')
         self.smoothing_iterations = widgets.SpinBox(value=1, min=0, max=10, label='Smoothing Iterations')
         
         # Add settings to container
@@ -200,14 +200,21 @@ class MeshGenerationWidget(QWidget):
             self.status.update_status('Cancelled')
             return
 
-        self.submit_btn.enabled = False
-        self.status.update_status('Running')
-        # Pass the validated script_path to the worker
-        threading.Thread(target=self._run_job_worker, args=(script_path,), daemon=True).start()
-
-    def _run_job_worker(self, script_path):
+        # Update config in main thread to capture current state
         try:
             config_path, meshes_dir = self._update_config()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to update config: {e}")
+            return
+
+        self.submit_btn.enabled = False
+        self.status.update_status('Running')
+        # Pass the validated script_path and config info to the worker
+        threading.Thread(target=self._run_job_worker, args=(script_path, config_path, meshes_dir), daemon=True).start()
+
+    def _run_job_worker(self, script_path, config_path, meshes_dir):
+        try:
+            # config_path and meshes_dir are passed from main thread
             work_dir = Path(self.experiment_manager.work_dir.value)
             
             # Using the passed script_path which is already validated
