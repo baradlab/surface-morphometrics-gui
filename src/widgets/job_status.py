@@ -1,5 +1,5 @@
 from magicgui import widgets
-from qtpy.QtWidgets import QProgressBar, QTextEdit
+from qtpy.QtWidgets import QProgressBar, QTextEdit, QSizePolicy
 from qtpy.QtCore import QObject, Signal
 
 class JobStatusWidget(widgets.Container):
@@ -29,6 +29,9 @@ class JobStatusWidget(widgets.Container):
             progress_container
         ])
         
+        # Prevent the widget from expanding horizontally when status text changes
+        self.native.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+
         # Connect signals
         self.signals.status_changed.connect(self._update_status_safe)
         self.signals.progress_changed.connect(self._update_progress_safe)
@@ -48,4 +51,13 @@ class JobStatusWidget(widgets.Container):
     def update_progress(self, value: int):
         """Update progress bar value"""
         self.signals.progress_changed.emit(value)
+
+    def clear(self):
+        """Reset status and progress to initial state."""
+        self.update_status("Not Started")
+        self.update_progress(0)
+
+    def append_output(self, text: str):
+        """Append output text to status display."""
+        self.update_status(text)
 

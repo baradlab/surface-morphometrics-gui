@@ -1,6 +1,5 @@
 from napari_vedo_bridge._cutter_widget import VedoCutter
 from napari_vedo_bridge._cutter_widget import is_ragged
-import threading
 import vtk
 from vtk.util import numpy_support
 import numpy as np
@@ -10,16 +9,12 @@ import glob
 from magicgui import widgets
 from qtpy.QtCore import QTimer
 from magicgui.widgets import FloatRangeSlider, FloatSpinBox
-from qtpy.QtWidgets import QSizePolicy
+from qtpy.QtWidgets import QSizePolicy, QScrollArea
+from qtpy.QtCore import Qt
 
-# Import napari-threedee components for automatic lighting and ambient occlusion
-try:
-    from napari_threedee.visualization.lighting_control import LightingControl
-    from napari_threedee.utils.napari_utils import get_napari_visual
-    NAPARI_THREEDEE_AVAILABLE = True
-except ImportError:
-    NAPARI_THREEDEE_AVAILABLE = False
-    print("Warning: napari-threedee not available for automatic lighting control")
+# We implement our own camera-following lighting directly on vispy's
+# ShadingFilter rather than using napari-threedee's LightingControl,
+# which has compatibility issues with shading_filter initialization.
 
 # Import libigl for ambient occlusion
 try:
@@ -50,6 +45,8 @@ class CustomVedoCutter(VedoCutter):
         self.controls_container = widgets.Container(layout='vertical', labels=True)
         self.controls_container.native.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         self.controls_container.native.setMinimumWidth(250)
+        self.controls_container.native.layout().setSpacing(8)
+        self.controls_container.native.layout().setContentsMargins(10, 10, 10, 10)
 
         self.property_selector = widgets.ComboBox(
             label="Property",
@@ -73,7 +70,14 @@ class CustomVedoCutter(VedoCutter):
             tooltip="Automatically apply appropriate colormap for selected property"
         )
 
-        # Universal contrast slider 
+        self.ao_enabled = widgets.CheckBox(
+            label="Ambient Occlusion",
+            value=True,
+            enabled=True,
+            tooltip="Toggle ambient occlusion effect on surface meshes"
+        )
+
+        # Universal contrast slider
         self.contrast_slider = FloatRangeSlider(
             label="Contrast",
             value=(0.0, 1.0),
@@ -96,30 +100,31 @@ class CustomVedoCutter(VedoCutter):
             tooltip="Set maximum value for contrast"
         )
 
-        # Container for slider and spinboxes
-        self.contrast_container = widgets.Container(layout='horizontal', labels=False)
+        # Container for slider and spinboxes — vertical layout to avoid cramping
+        self.contrast_container = widgets.Container(layout='vertical', labels=True)
 
-        # Set minimum widths for the spinboxes to make them smaller
-        self.contrast_min.min_width = 80
-        self.contrast_max.min_width = 80
+        # Min/Max row
+        self.contrast_minmax_row = widgets.Container(layout='horizontal', labels=True)
+        self.contrast_minmax_row.append(self.contrast_min)
+        self.contrast_minmax_row.append(self.contrast_max)
 
-        # Set the slider to take up more space and be more flexible
-        self.contrast_slider.min_width = 200
         self.contrast_slider.native.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
-        self.contrast_container.append(self.contrast_min)
         self.contrast_container.append(self.contrast_slider)
-        self.contrast_container.append(self.contrast_max)
+        self.contrast_container.append(self.contrast_minmax_row)
         self.contrast_container.visible = False
 
         self.stats_label = widgets.Label(value="No data loaded")
 
-        # Create a clean container for the load mesh button with a Mesh Display label beside it
+        # Create a clean container for the load mesh button with a Mesh label beside it
         if self.load_mesh_button:
             mesh_row_container = widgets.Container(layout='horizontal')
-            mesh_display_label = widgets.Label(value="Mesh Display")
+            mesh_display_label = widgets.Label(value="Mesh")
             mesh_row_container.append(mesh_display_label)
-            
+
+            self.load_mesh_button.setMinimumWidth(100)
+            self.load_mesh_button.setFixedHeight(28)
+            self.load_mesh_button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
             button_container = widgets.Container()
             button_container.native.layout().addWidget(self.load_mesh_button)
             mesh_row_container.append(button_container)
@@ -130,16 +135,18 @@ class CustomVedoCutter(VedoCutter):
                 self.property_selector,
                 self.colormap_selector,
                 self.auto_apply,
+                self.ao_enabled,
                 self.stats_label,
-                self.contrast_container,  
+                self.contrast_container,
             ])
         else:
             self.controls_container.extend([
                 self.property_selector,
                 self.colormap_selector,
                 self.auto_apply,
+                self.ao_enabled,
                 self.stats_label,
-                self.contrast_container, 
+                self.contrast_container,
             ])
 
         # Clear the existing layout and add our clean container
@@ -150,9 +157,25 @@ class CustomVedoCutter(VedoCutter):
             if widget:
                 widget.setParent(None)
 
-        # Add our clean container with better sizing
-        self.controls_container.native.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
-        layout.addWidget(self.controls_container.native)
+        # Compact child widget internal margins while keeping outer spacing
+        for i in range(self.controls_container.native.layout().count()):
+            item = self.controls_container.native.layout().itemAt(i)
+            if item and item.widget():
+                child_layout = item.widget().layout()
+                if child_layout:
+                    child_layout.setSpacing(4)
+                    child_layout.setContentsMargins(0, 2, 0, 2)
+
+        # Wrap controls in a scroll area so content is scrollable when dock space is tight
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setWidget(self.controls_container.native)
+        layout.addWidget(scroll_area)
+        self.setMinimumHeight(400)
+
+        # Push all controls to the top so they don't spread out vertically
+        self.controls_container.native.layout().addStretch(1)
 
         # --- Connect Signals ---
         self.viewer.layers.events.inserted.connect(self._on_layer_inserted)
@@ -163,6 +186,7 @@ class CustomVedoCutter(VedoCutter):
         self.contrast_slider.changed.connect(self._on_contrast_slider_changed)
         self.contrast_min.changed.connect(self._on_contrast_min_changed)
         self.contrast_max.changed.connect(self._on_contrast_max_changed)
+        self.ao_enabled.changed.connect(self._on_ao_toggled)
 
         # --- Auto-send to napari functionality ---
         self.last_mesh_filename = None
@@ -231,13 +255,10 @@ class CustomVedoCutter(VedoCutter):
 
         # Check if this is a Surface layer with data
         if isinstance(layer, Surface):
-            # Ensure proper shading filter initialization to prevent napari-threedee errors
-            self._ensure_surface_shading_initialized(layer)
-            
-            # Try to initialize it as a VTP layer
+            # 1. Initialize VTP data (loads scalars, sets initial property)
             self._initialize_vtp_layer(layer)
-            
-            # Apply automatic lighting and ambient occlusion
+
+            # 2. Apply lighting and AO only after VTP init is complete
             self._apply_automatic_lighting_ao(layer)
 
     def _on_active_layer_changed(self, event):
@@ -474,26 +495,18 @@ class CustomVedoCutter(VedoCutter):
 
 
     
-    def _ensure_surface_shading_initialized(self, layer):
-        """Ensure surface layer has proper shading filter initialization to prevent napari-threedee errors."""
-        if not isinstance(layer, Surface):
-            return
-            
-        try:
-            # Force layer refresh to ensure proper visual node initialization
-            layer.refresh()
-            
-            # Wait a bit for the refresh to complete
-            import time
-            time.sleep(0.1)
-            
-            # Try to access the visual node to ensure it's properly initialized
-            if hasattr(layer, '_node') and layer._node is not None:
-                # This should trigger proper initialization of the shading filter
-                pass
-                
-        except Exception as e:
-            print(f"Warning: Could not ensure proper shading initialization for layer {layer.name}: {e}")
+    def _on_ao_toggled(self, value):
+        """Handle AO checkbox toggle — reapply current property with or without AO."""
+        layer = self.viewer.layers.selection.active
+        if not layer or not self._is_vtp_surface_layer(layer):
+            for potential_layer in self.viewer.layers:
+                if self._is_vtp_surface_layer(potential_layer):
+                    layer = potential_layer
+                    break
+        if layer and self._is_vtp_surface_layer(layer):
+            active = layer.metadata.get('active_property')
+            if active and active != 'solid_color':
+                self._update_layer_data(layer, active)
 
     def _on_property_changed(self, new_property: str):
         """Handle user selecting a new property from the dropdown."""
@@ -536,6 +549,11 @@ class CustomVedoCutter(VedoCutter):
                 vertices, faces, _ = layer.data
                 # Re-assign data without scalar values
                 layer.data = (vertices.copy(), faces.copy())
+                if layer in self._lit_layers:
+                    try:
+                        layer.shading = 'smooth'
+                    except Exception:
+                        pass
             layer.metadata['active_property'] = 'solid_color'
             layer.name = layer.name.split(' [')[0] # Reset name
             self._update_ui_from_layer(layer)
@@ -574,12 +592,30 @@ class CustomVedoCutter(VedoCutter):
         if len(new_values.shape) > 1:
             new_values = np.linalg.norm(new_values, axis=1)
 
+        # Apply ambient occlusion if available and enabled
+        ao_factors = layer.metadata.get('ao_factors')
+        if ao_factors is not None and self.ao_enabled.value:
+            if len(new_values.shape) == 1 and len(ao_factors) == len(new_values):
+                new_values = new_values * ao_factors
+
         # Re-assign the layer's data. Using .copy() for the geometry arrays
         # helps ensure that napari's change detection is triggered.
         layer.data = (vertices.copy(), faces.copy(), new_values)
 
+        # Reassigning layer.data can rebuild the vispy visual, resetting
+        # the shading filter. Restore smooth shading for lit layers.
+        if layer in self._lit_layers:
+            try:
+                layer.shading = 'smooth'
+            except Exception:
+                pass
+
         # Update contrast limits and metadata
-        layer.contrast_limits = (np.min(new_values), np.max(new_values))
+        finite_values = new_values[np.isfinite(new_values)]
+        if len(finite_values) > 0:
+            layer.contrast_limits = (np.min(finite_values), np.max(finite_values))
+        else:
+            layer.contrast_limits = (0, 1)
         layer.metadata['active_property'] = scalar_array_name
 
         # Update layer name
@@ -692,7 +728,9 @@ class CustomVedoCutter(VedoCutter):
 
         points = self.mesh.vertices
         faces = np.asarray(self.mesh.cells)
-        mesh_tuple = (points, faces)
+        # Include default values so AO can attenuate them
+        values = np.ones(len(points))
+        mesh_tuple = (points, faces, values)
 
         filepath = self.mesh.filename
         if filepath:
@@ -711,7 +749,7 @@ class CustomVedoCutter(VedoCutter):
         property_lower = property_name.lower()
 
         # Check if data is diverging (crosses zero)
-        is_diverging = np.min(data) < 0 and np.max(data) > 0
+        is_diverging = np.nanmin(data) < 0 and np.nanmax(data) > 0
 
 
         if 'orientation' in property_lower:
@@ -736,7 +774,15 @@ class CustomVedoCutter(VedoCutter):
             return
 
         all_values = layer.metadata['vtp_scalar_data'][active_property]
-        data_min, data_max = float(np.min(all_values)), float(np.max(all_values))
+        # Skip vector/multi-dimensional properties (e.g. normals with shape (N, 3))
+        if hasattr(all_values, 'ndim') and all_values.ndim > 1:
+            self.contrast_container.visible = False
+            return
+        finite_values = all_values[np.isfinite(all_values)] if hasattr(all_values, 'ravel') else all_values[np.isfinite(all_values)]
+        if len(finite_values) == 0:
+            self.contrast_container.visible = False
+            return
+        data_min, data_max = float(np.min(finite_values)), float(np.max(finite_values))
 
         if np.isclose(data_min, data_max):
             self.contrast_container.visible = False
@@ -815,81 +861,148 @@ class CustomVedoCutter(VedoCutter):
                 self.contrast_slider.value = (clamped_min, clamped_max)
 
     def _initialize_automatic_lighting_ao(self):
-        """Initialize automatic lighting and ambient occlusion for surface layers."""
-        # Initialize lighting control if available
-        if NAPARI_THREEDEE_AVAILABLE:
-            self.lighting_control = LightingControl(self.viewer)
-            self.lighting_control.enabled = True
-        else:
-            self.lighting_control = None
+        """Initialize camera-following lighting and ambient occlusion."""
+        # Layers with smooth shading that need light direction updates
+        self._lit_layers = []
+        self._camera_connected = False
 
         # Track layers that have been processed
         self.processed_layers = set()
 
+    def _get_vispy_visual(self, layer):
+        """Get the vispy visual for a napari layer."""
+        try:
+            return self.viewer.window._qt_window._qt_viewer.layer_to_visual[layer]
+        except Exception:
+            return None
+
+    def _compute_ao_factors(self, vertices, faces):
+        """Compute per-vertex ambient occlusion using normal divergence.
+
+        Measures how much neighboring vertex normals diverge from the vertex
+        normal.  In concave regions (crevices/valleys), neighbor normals point
+        away from each other → lower average dot product → more occlusion.
+        On convex ridges, normals align → less occlusion.
+        """
+        normals = igl.per_vertex_normals(vertices, faces)
+        adj = igl.adjacency_list(faces)
+        n_verts = len(vertices)
+        raw_ao = np.zeros(n_verts)
+
+        for i in range(n_verts):
+            neighbors = adj[i]
+            if len(neighbors) < 2:
+                raw_ao[i] = 1.0
+                continue
+            # Average dot product between this vertex's normal and neighbors'
+            neighbor_normals = normals[neighbors]
+            dots = neighbor_normals @ normals[i]
+            raw_ao[i] = np.mean(dots)
+
+        # raw_ao ranges roughly from -1 (deep crevice) to 1 (exposed peak)
+        # Map to [0, 1] range: -1 → heavily occluded, 1 → no occlusion
+        # Then remap to a useful visual range [ao_min, 1.0]
+        ao_min = 0.25  # darkest occlusion factor
+        ao_normalized = np.clip((raw_ao + 1.0) / 2.0, 0, 1)  # map [-1,1] to [0,1]
+        ao_factors = ao_min + (1.0 - ao_min) * ao_normalized
+        return ao_factors
+
     def _apply_automatic_lighting_ao(self, layer):
-        """Apply automatic lighting and ambient occlusion to a surface layer."""
+        """Apply ambient occlusion and camera-following lighting to a surface layer."""
         if not isinstance(layer, Surface):
             return
 
         # Skip if already processed
         if layer in self.processed_layers:
             return
-
-        # Mark as processed
         self.processed_layers.add(layer)
 
-        # Apply lighting control immediately (fast)
-        if self.lighting_control and NAPARI_THREEDEE_AVAILABLE:
-            try:
-                self.lighting_control.set_layers([layer])
-                print(f"Applied automatic lighting to layer: {layer.name}")
-            except Exception as e:
-                print(f"Warning: Could not apply lighting to layer {layer.name}: {e}")
-
-        # Apply ambient occlusion in background thread (slower)
+        # Compute and store AO factors synchronously (geometry-only, no vispy needed)
         if IGL_AVAILABLE:
-            self._apply_ambient_occlusion_background(layer)
-        else:
-            print(f"Warning: libigl not available, skipping ambient occlusion for layer: {layer.name}")
-
-    def _apply_ambient_occlusion_background(self, layer):
-        """Apply ambient occlusion in a background thread to avoid blocking the UI."""
-        def ao_worker():
             try:
-                # Get layer data
-                if len(layer.data) == 3:
-                    vertices, faces, values = layer.data
-                else:
-                    # If no values, create default ones
-                    vertices, faces = layer.data
-                    values = np.ones(len(vertices))
-
-                # Ensure faces are integers
-                faces = faces.astype(int)
-
-                # Calculate vertex normals
-                vertex_normals = igl.per_vertex_normals(vertices, faces)
-
-                # Calculate ambient occlusion (20 sample points)
-                ao = igl.ambient_occlusion(vertices, faces, vertices, vertex_normals, 20)
-
-                # Apply attenuation
-                attenuation_factors = 1 - ao
-                attenuated_values = attenuation_factors * values
-
-                # Store original data for potential restoration
-                layer.metadata['original_ao_data'] = (vertices.copy(), faces.copy(), values.copy())
-
-                # Update layer data with AO
-                layer.data = (vertices, faces, attenuated_values)
-
-                print(f"Applied ambient occlusion to layer: {layer.name}")
-
+                if len(layer.data) >= 2:
+                    vertices, faces = layer.data[0], layer.data[1]
+                    ao_factors = self._compute_ao_factors(
+                        vertices, faces.astype(int)
+                    )
+                    layer.metadata['ao_factors'] = ao_factors
+                    # Reapply current property with AO
+                    active = layer.metadata.get('active_property')
+                    if active and active != 'solid_color':
+                        self._update_layer_data(layer, active)
             except Exception as e:
-                print(f"Warning: Could not apply ambient occlusion to layer {layer.name}: {e}")
+                print(f"Warning: AO computation failed for {layer.name}: {e}")
 
-        # Start background thread
-        ao_thread = threading.Thread(target=ao_worker, daemon=True)
-        ao_thread.start()
+        # Defer lighting setup until the vispy visual node is fully created
+        QTimer.singleShot(200, lambda l=layer: self._deferred_lighting_setup(l))
+
+    def _deferred_lighting_setup(self, layer):
+        """Set up smooth shading with camera-following light after vispy is ready."""
+        try:
+            if layer not in self.viewer.layers:
+                return
+
+            layer.shading = 'smooth'
+
+            visual = self._get_vispy_visual(layer)
+            if visual is None or visual.node.shading_filter is None:
+                layer.shading = 'none'
+                return
+
+            self._lit_layers.append(layer)
+
+            # Connect camera angle changes once
+            if not self._camera_connected:
+                self.viewer.camera.events.angles.connect(self._on_camera_angles_changed)
+                self._camera_connected = True
+
+            # Set initial light direction
+            self._on_camera_angles_changed()
+        except Exception as e:
+            try:
+                layer.shading = 'none'
+            except Exception:
+                pass
+            print(f"Warning: Could not set up lighting for {layer.name}: {e}")
+
+    def _on_camera_angles_changed(self, event=None):
+        """Update light direction on all lit layers to follow the camera."""
+        try:
+            view_direction = np.asarray(self.viewer.camera.view_direction)
+        except Exception:
+            return
+
+        for layer in list(self._lit_layers):
+            try:
+                if layer not in self.viewer.layers:
+                    self._lit_layers.remove(layer)
+                    continue
+                visual = self._get_vispy_visual(layer)
+                if visual is None:
+                    continue
+                if visual.node.shading_filter is None:
+                    # Visual was rebuilt; restore smooth shading
+                    try:
+                        layer.shading = 'smooth'
+                        visual = self._get_vispy_visual(layer)
+                        if visual is None or visual.node.shading_filter is None:
+                            continue
+                    except Exception:
+                        continue
+                # Transform view direction to layer data coordinates
+                layer_view_dir = np.asarray(
+                    layer._world_to_data_ray(view_direction)
+                )
+                # napari uses dims_displayed to pick the right 3 axes
+                if hasattr(layer, '_slice_input'):
+                    dims = layer._slice_input.displayed
+                elif hasattr(layer, '_dims_displayed'):
+                    dims = layer._dims_displayed
+                else:
+                    dims = list(range(layer.ndim))
+                layer_view_dir = layer_view_dir[dims]
+                visual.node.shading_filter.light_dir = layer_view_dir[::-1]
+            except Exception:
+                pass
 
 

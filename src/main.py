@@ -56,27 +56,28 @@ def main():
         vedo_cutter = CustomVedoCutter(viewer)
         
 
-        # Add widget as dock widget under layer controls (left)
-        dw_vedo = viewer.window.add_dock_widget(
-            vedo_cutter,
-            name='Vedo Cutter',
-            area='left'
-        )
-        
         # Setup and add dock widgets with proper sizing
         dw1 = viewer.window.add_dock_widget(experiment_manager, name='Experiment Manager', area='right')
         dw2 = viewer.window.add_dock_widget(mesh_widget, name='Surface Mesh', area='right')
         dw3 = viewer.window.add_dock_widget(pycurv_widget, name='Curvature', area='right')
         dw4 = viewer.window.add_dock_widget(distance_widget.native, name='Distance', area='right')
-        
+
+        # Add Vedo Cutter to the right side, tabified with the other widgets
+        dw_vedo = viewer.window.add_dock_widget(
+            vedo_cutter,
+            name='Vedo Cutter',
+            area='right'
+        )
+
         protein_loader = ProteinLoaderPlugin(viewer)
         dw_protein_loader = viewer.window.add_dock_widget(protein_loader.container.native, name='Protein Loader', area='right')
-        
-        # Tabify dock widgets
+
+        # Tabify all right-side dock widgets
         viewer.window._qt_window.tabifyDockWidget(dw1, dw2)
         viewer.window._qt_window.tabifyDockWidget(dw2, dw3)
         viewer.window._qt_window.tabifyDockWidget(dw3, dw4)
-        viewer.window._qt_window.tabifyDockWidget(dw1, dw_protein_loader)
+        viewer.window._qt_window.tabifyDockWidget(dw4, dw_vedo)
+        viewer.window._qt_window.tabifyDockWidget(dw_vedo, dw_protein_loader)
         
         # Connect mesh generation completion signal to PyCurv file list refresh
         # (Connect after widgets are added to ensure they are fully initialized)

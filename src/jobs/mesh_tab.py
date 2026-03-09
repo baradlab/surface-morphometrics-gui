@@ -7,7 +7,7 @@ from magicgui import widgets
 from widgets.job_status import JobStatusWidget
 from ruamel.yaml import YAML
 from qtpy.QtCore import QTimer, Signal, QObject
-from qtpy.QtWidgets import QWidget, QMessageBox
+from qtpy.QtWidgets import QWidget, QMessageBox, QScrollArea, QVBoxLayout
 import threading
 from utils.archive_utils import check_and_archive_outputs
 
@@ -20,10 +20,20 @@ class MeshGenerationWidget(QWidget):
     def __init__(self, experiment_manager):
         super().__init__()
         self.experiment_manager = experiment_manager
-        
+
         self.container = widgets.Container(layout='vertical', labels=True)
-        self.native = self.container.native  # Use magicgui container's native widget
-        self.experiment_manager = experiment_manager
+
+        # Wrap the container in a scroll area
+        scroll_area = QScrollArea()
+        scroll_area.setWidget(self.container.native)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QScrollArea.NoFrame)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(scroll_area)
+
+        self.native = self  # The QWidget itself is now the native widget
         
         # Create header container
         header = widgets.Container(widgets=[
@@ -38,7 +48,7 @@ class MeshGenerationWidget(QWidget):
         # Create settings widgets
         self.angstroms = widgets.CheckBox(value=False, label='Angstrom Scaling')
         self.ultrafine = widgets.CheckBox(value=True, label='Ultrafine Surface (High Quality, Slow)')
-        self.mesh_sampling = widgets.FloatSpinBox(value=0.99, min=0.1, max=10.0, step=0.01, label='Mesh Sampling Rate')
+        self.target_area = widgets.FloatSpinBox(value=1.0, min=0.1, max=100.0, step=0.1, label='Target Triangle Area')
         self.simplify = widgets.CheckBox(value=False, label='Simplify Surface')
         self.max_triangles = widgets.SpinBox(value=300000, min=1000, max=1000000, label='Max Triangles')
         self.extrapolation_distance = widgets.FloatSpinBox(value=1.5, min=0.1, max=10.0, step=0.1, label='Extrapolation Distance')
@@ -51,7 +61,7 @@ class MeshGenerationWidget(QWidget):
         settings.extend([
             self.angstroms,
             self.ultrafine,
-            self.mesh_sampling,
+            self.target_area,
             self.simplify,
             self.max_triangles,
             self.extrapolation_distance,
@@ -88,14 +98,14 @@ class MeshGenerationWidget(QWidget):
         # Set widget values from config if present
         if mesh_cfg:
             self.angstroms.value = mesh_cfg.get('angstroms', False)
-            self.ultrafine.value = mesh_cfg.get('ultrafine', False)
-            self.mesh_sampling.value = mesh_cfg.get('mesh_sampling', 1)
-            self.simplify.value = mesh_cfg.get('simplify', True)
-            self.max_triangles.value = mesh_cfg.get('max_triangles', 100000)
+            self.ultrafine.value = mesh_cfg.get('ultrafine', True)
+            self.target_area.value = mesh_cfg.get('target_area', 1.0)
+            self.simplify.value = mesh_cfg.get('simplify', False)
+            self.max_triangles.value = mesh_cfg.get('max_triangles', 300000)
             self.extrapolation_distance.value = mesh_cfg.get('extrapolation_distance', 1.5)
-            self.octree_depth.value = mesh_cfg.get('octree_depth', 9)
+            self.octree_depth.value = mesh_cfg.get('octree_depth', 7)
             self.point_weight.value = mesh_cfg.get('point_weight', 0.7)
-            self.neighbor_count.value = mesh_cfg.get('neighbor_count', 300)
+            self.neighbor_count.value = mesh_cfg.get('neighbor_count', 400)
             self.smoothing_iterations.value = mesh_cfg.get('smoothing_iterations', 1)
         # Check for mesh outputs and update status
         exp_dir = None
@@ -141,7 +151,7 @@ class MeshGenerationWidget(QWidget):
             config['surface_generation'] = {
                 'angstroms': self.angstroms.value,
                 'ultrafine': self.ultrafine.value,
-                'mesh_sampling': self.mesh_sampling.value,
+                'target_area': self.target_area.value,
                 'simplify': self.simplify.value,
                 'max_triangles': self.max_triangles.value,
                 'extrapolation_distance': self.extrapolation_distance.value,
@@ -190,9 +200,9 @@ class MeshGenerationWidget(QWidget):
         work_dir = Path(self.experiment_manager.work_dir.value)
         results_dir = work_dir / self.experiment_manager.experiment_name.currentText() / 'results'
         
-        # Resolve config path for snapshot
+        # Resolve config path for snapshot (inside experiment directory)
         config_path_to_pass = None
-        potential_config_path = work_dir / f"{self.experiment_manager.experiment_name.currentText()}_config.yml"
+        potential_config_path = work_dir / self.experiment_manager.experiment_name.currentText() / f"{self.experiment_manager.experiment_name.currentText()}_config.yml"
         if potential_config_path.exists():
             config_path_to_pass = potential_config_path
             
@@ -236,23 +246,23 @@ class MeshGenerationWidget(QWidget):
                 cwd=str(Path(self.experiment_manager.work_dir.value) / self.experiment_manager.experiment_name.currentText())
             )
             progress = 0
+            step_count = 0
             if process.stdout is not None:
                 for line in process.stdout:
                     line = line.strip()
                     if line:
                         print(line)
-                        if "Processing segmentation" in line:
-                            progress += 10
-                            self.status.update_progress(min(progress, 100))
-                        elif "Generating xyz file:" in line:
-                            progress += 10
-                            self.status.update_progress(min(progress, 100))
-                        elif "Generating a ply mesh" in line:
-                            progress += 10
-                            self.status.update_progress(min(progress, 100))
-                        elif "Converting the ply file to a vtp file:" in line:
-                            progress += 10
-                            self.status.update_progress(min(progress, 100))
+                        if any(kw in line for kw in [
+                            "Processing segmentation",
+                            "Generating xyz file:",
+                            "Generating a ply mesh",
+                            "Converting the ply file to a vtp file:",
+                        ]):
+                            step_count += 1
+                            # Scale progress so it approaches but never reaches 100
+                            # 100% is only set on actual completion below
+                            progress = min(95, int(95 * (1 - 1 / (1 + step_count * 0.3))))
+                            self.status.update_progress(progress)
             return_code = process.wait()
             if return_code == 0:
                 exp_dir = Path(self.experiment_manager.work_dir.value) / self.experiment_manager.experiment_name.currentText()

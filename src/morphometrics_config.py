@@ -74,8 +74,11 @@ class ConfigYAMLPreserver:
         try:
             with open(self.yaml_path, 'w') as f:
                 f.write(self.content)
+            # Clean up backup after successful save
+            if 'backup_path' in locals() and backup_path.exists():
+                backup_path.unlink()
         except Exception as e:
-            if 'backup_path' in locals():
+            if 'backup_path' in locals() and backup_path.exists():
                 backup_path.rename(self.yaml_path)
             raise e
 
@@ -186,13 +189,16 @@ class InterDictEditor(widgets.Container):
         container = widgets.Container(layout='vertical')
         container.extend([header, value_editor])
         
+        original_key = key
         def remove():
-            if key_edit.value in self.entries:
-                self.entries.pop(key_edit.value)
+            # Use original_key to find the entry in the dict, since the
+            # key_edit widget value may have been renamed by the user.
+            if original_key in self.entries:
+                self.entries.pop(original_key)
                 self.remove(container)
-                
+
         remove_button.clicked.connect(remove)
-        
+
         self.entries[key] = (key_edit, value_editor, container)
         self.insert(-1, container)
 
@@ -247,7 +253,7 @@ class ConfigEditor(widgets.Container):
                 widgets=[
                     widgets.CheckBox(name='angstroms', label='Angstroms Scale', value=False),
                     widgets.CheckBox(name='ultrafine', label='Ultra Fine Mode', value=True),
-                    widgets.FloatSpinBox(name='mesh_sampling', label='Mesh Sampling', value=0.99),
+                    widgets.FloatSpinBox(name='target_area', label='Target Triangle Area', value=1.0),
                     widgets.CheckBox(name='simplify', label='Simplify', value=False),
                     widgets.SpinBox(name='max_triangles', label='Max Triangles', value=300000),
                     widgets.FloatSpinBox(name='extrapolation_distance', label='Extrapolation Distance', value=1.5),
@@ -352,7 +358,7 @@ class ConfigEditor(widgets.Container):
             'surface_generation': {
                 'angstroms': self.containers['surface'].angstroms.value,
                 'ultrafine': self.containers['surface'].ultrafine.value,
-                'mesh_sampling': self.containers['surface'].mesh_sampling.value,
+                'target_area': self.containers['surface'].target_area.value,
                 'simplify': self.containers['surface'].simplify.value,
                 'max_triangles': self.containers['surface'].max_triangles.value,
                 'extrapolation_distance': self.containers['surface'].extrapolation_distance.value,
@@ -377,7 +383,6 @@ class ConfigEditor(widgets.Container):
             },
             'cores': self.containers['cores'].cores.value
         }
-        return values
 
     def _set_values(self, config: dict):
         """Set widget values from config"""
@@ -393,7 +398,7 @@ class ConfigEditor(widgets.Container):
         surf_gen = config.get('surface_generation', {})
         self.containers['surface'].angstroms.value = surf_gen.get('angstroms', False)
         self.containers['surface'].ultrafine.value = surf_gen.get('ultrafine', True)
-        self.containers['surface'].mesh_sampling.value = surf_gen.get('mesh_sampling', 0.99)
+        self.containers['surface'].target_area.value = surf_gen.get('target_area', 1.0)
         self.containers['surface'].simplify.value = surf_gen.get('simplify', False)
         self.containers['surface'].max_triangles.value = surf_gen.get('max_triangles', 300000)
         self.containers['surface'].extrapolation_distance.value = surf_gen.get('extrapolation_distance', 1.5)

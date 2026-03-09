@@ -385,19 +385,18 @@ class ExperimentManager(QWidget):
             # Update button text
 
             self.submit_button.setText('Resume Experiment')
-            
+
             # Try to load the experiment config if it exists
 
             self._load_existing_experiment_config()
-            
+
             # Enable/disable button based on state
             self._check_start_button_state()
-            
+
             # Keep focus in the text box
             self.experiment_name.lineEdit().setFocus()
-        else:
-            # Clear fields if typing a new name
-            self._clear_experiment_fields()
+        elif self.experiment_name.currentText().strip():
+            # User is typing a new name — just update button text
             self.submit_button.setText('Start New Experiment')
 
     def _load_existing_experiment_config(self):
@@ -504,19 +503,17 @@ class ExperimentManager(QWidget):
                 self.data_dir.value = self.current_config['data_dir']
 
     def _update_config_paths(self):
-        """Update paths in the config when directories are selected"""
+        """Update paths in the config when directories are selected.
+
+        Always uses the current widget values as the source of truth,
+        updating the config dict to match (not the other way around).
+        """
         if self.current_config:
-            # Don't overwrite existing paths when resuming
-            if 'data_dir' not in self.current_config and self.data_dir.value:
+            if self.data_dir.value:
                 self.current_config['data_dir'] = str(self.data_dir.value)
-            elif 'data_dir' in self.current_config:
-                # Update UI to reflect config value
-                self.data_dir.value = self.current_config['data_dir']
-            
-            if 'work_dir' not in self.current_config and self.work_dir.value:
+
+            if self.work_dir.value:
                 self.current_config['work_dir'] = str(self.work_dir.value)
-            elif 'work_dir' in self.current_config:
-                pass
 
         self._check_start_button_state()
 
