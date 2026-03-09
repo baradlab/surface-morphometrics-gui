@@ -385,19 +385,18 @@ class ExperimentManager(QWidget):
             # Update button text
 
             self.submit_button.setText('Resume Experiment')
-            
+
             # Try to load the experiment config if it exists
 
             self._load_existing_experiment_config()
-            
+
             # Enable/disable button based on state
             self._check_start_button_state()
-            
+
             # Keep focus in the text box
             self.experiment_name.lineEdit().setFocus()
-        else:
-            # Clear fields if typing a new name
-            self._clear_experiment_fields()
+        elif self.experiment_name.currentText().strip():
+            # User is typing a new name — just update button text
             self.submit_button.setText('Start New Experiment')
 
     def _load_existing_experiment_config(self):
@@ -489,25 +488,32 @@ class ExperimentManager(QWidget):
         with open(file_path, 'r') as f:
             self.current_config = yaml.load(f)
 
-        # Initialize segmentation values if present
-        if self.current_config and 'segmentation_values' in self.current_config:
-            self.segmentation_container._set_values(self.current_config['segmentation_values'])
+        # Update UI with config values
+        if self.current_config:
+            # Update cores if present
+            if 'cores' in self.current_config:
+                self.cores_input.setValue(self.current_config['cores'])
+            
+            # Initialize segmentation values if present
+            if 'segmentation_values' in self.current_config:
+                self.segmentation_container._set_values(self.current_config['segmentation_values'])
+            
+            # Update other fields if plausible (optional, but requested by plan)
+            if 'data_dir' in self.current_config:
+                self.data_dir.value = self.current_config['data_dir']
 
     def _update_config_paths(self):
-        """Update paths in the config when directories are selected"""
+        """Update paths in the config when directories are selected.
+
+        Always uses the current widget values as the source of truth,
+        updating the config dict to match (not the other way around).
+        """
         if self.current_config:
-            # Don't overwrite existing paths when resuming
-            if 'data_dir' not in self.current_config and self.data_dir.value:
+            if self.data_dir.value:
                 self.current_config['data_dir'] = str(self.data_dir.value)
-            elif 'data_dir' in self.current_config:
-                # Update UI to reflect config value
-                self.data_dir.value = self.current_config['data_dir']
-            
-            if 'work_dir' not in self.current_config and self.work_dir.value:
+
+            if self.work_dir.value:
                 self.current_config['work_dir'] = str(self.work_dir.value)
-            elif 'work_dir' in self.current_config:
-                    # No need to update work_dir UI since that's how we loaded the config
-                pass
 
         self._check_start_button_state()
 

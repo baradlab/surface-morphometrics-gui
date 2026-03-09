@@ -35,13 +35,16 @@ class PyCurvWidget(QWidget):
         settings_container = widgets.Container(layout='vertical', labels=True)
         settings_container.native.layout().setSpacing(5)
         settings_container.native.layout().setContentsMargins(3, 3, 3, 3)
-        self.radius_hit_input = widgets.SpinBox(value=8, min=1, max=20, label='Radius Hit')
+        self.radius_hit_input = widgets.SpinBox(value=9, min=1, max=20, label='Radius Hit')
         self.min_component_input = widgets.SpinBox(value=30, min=1, max=1000, label='Min Component')
         self.exclude_borders_input = widgets.SpinBox(value=1, min=0, max=100, label='Exclude Borders')
+        self.n_jobs_input = widgets.SpinBox(value=1, min=1, max=128, label='Concurrent Jobs (Parallel Files)')
+        self.n_jobs_input.tooltip = "Number of files to process simultaneously. 'Cores' setting controls threads per file."
         settings_container.extend([
             self.radius_hit_input,
             self.min_component_input,
             self.exclude_borders_input,
+            self.n_jobs_input
         ])
         main_layout.addWidget(QLabel("<b>Curvature Measurement Settings</b>"))
         main_layout.addWidget(settings_container.native)
@@ -269,27 +272,44 @@ class PyCurvWidget(QWidget):
             print(f"[Error] {error_msg}")
             return
 
-        # Archive check for PyCurv (Targets 'measurements' to keep data clean)
-        try:
-             work_dir = Path(self.experiment_manager.work_dir.value)
-             exp_name = self.experiment_manager.experiment_name.currentText()
-             exp_dir = work_dir / exp_name
-             config_path = exp_dir / f"{exp_name}_config.yml"
-             results_dir = exp_dir / 'results'
-     
-             if not check_and_archive_outputs(self, results_dir, config_path=config_path, file_patterns=['*AVV*', '*VV*', '*.log', '*.csv', '*.gt', '*.svg', '*.png']):
-                 print("User cancelled.")
-                 return
-        except Exception as e:
-            print(f"Archive check failed: {e}")
-            pass
-
         # Collect data from UI in the main thread
         selected_vtp_files = sorted(list(set([cb.file_path for cb in self.vtp_checkboxes if cb.isChecked()])))
         
         if not selected_vtp_files:
             QMessageBox.warning(self, "No Files", "No VTP files selected.")
             return
+
+        # Archive check for PyCurv (Targets 'measurements' to keep data clean)
+        # We now generate specific patterns for the selected files to avoid false positive prompts
+        try:
+             work_dir = Path(self.experiment_manager.work_dir.value)
+             exp_name = self.experiment_manager.experiment_name.currentText()
+             exp_dir = work_dir / exp_name
+             results_dir = exp_dir / 'results'
+             
+             # Generate specific patterns for selected files
+             base_patterns = ['*AVV*', '*VV*', '*.log', '*.csv', '*.gt', '*.svg', '*.png']
+             specific_patterns = []
+             
+             for vtp_path in selected_vtp_files:
+                 # Extract stem: remove .surface.vtp or .SURFACE.VTP
+                 fname = Path(vtp_path).name
+                 stem = fname.replace('.surface.vtp', '').replace('.SURFACE.VTP', '')
+                 # Add patterns for this stem
+                 for pattern in base_patterns:
+                     specific_patterns.append(f"{stem}{pattern}")
+             
+             # Use specific patterns if we have selected files, otherwise fallback 
+             patterns_to_check = specific_patterns if specific_patterns else base_patterns
+
+             if not check_and_archive_outputs(self, results_dir, config_path=config_path, file_patterns=patterns_to_check):
+                 print("User cancelled.")
+                 return
+        except Exception as e:
+            print(f"Archive check failed: {e}")
+            import traceback
+            traceback.print_exc()
+            pass
 
         # Get number of cores
         cores = self.experiment_manager.current_config.get('cores', 6)
@@ -330,23 +350,33 @@ class PyCurvWidget(QWidget):
             success_count = 0
             lock = threading.Lock()
             
-            status_msg = f'Processing {total_files} files using {max_workers} workers...'
+            # Explicit N_Jobs Logic
+            n_jobs = self.n_jobs_input.value
+            cores_per_job = job_data['cores']
+            
+            # Validation (Warning only)
+            total_threads = n_jobs * cores_per_job
+            import os
+            sys_cores = os.cpu_count() or 1
+            if total_threads > sys_cores:
+                print(f"[WARNING] Requesting {total_threads} threads on {sys_cores}-core system. System may freeze.")
+            
+            print(f"Cluster-Style Execution: Launching {n_jobs} parallel jobs.")
+            print(f"Each job will use {cores_per_job} cores (Total Load: {total_threads}/{sys_cores}).")
+            
+            status_msg = f'Processing {total_files} files using {n_jobs} parallel jobs (Cores/Job: {cores_per_job})...'
             self.status.update_status(status_msg)
             print(status_msg)
 
             def process_vtp_file(vtp_file_path):
                 vtp_file = Path(vtp_file_path)
-                # The vtp_file_arg needs to be relative to where the script is run from (work_dir)
-                # If the file is in a subdirectory, the path needs to reflect that.
                 try:
                     vtp_file_arg = vtp_file.relative_to(work_dir)
                 except ValueError:
-                    # If the file is not in work_dir, we can't make a relative path.
-                    # This might happen if files are in various subdirs.
-                    # The script itself might handle absolute paths, but let's stick to relative for consistency.
                     print(f"[ERROR] File {vtp_file} is not inside the working directory {work_dir}.")
                     return {'file_name': vtp_file.name, 'return_code': -1}
 
+                # Pass the ORIGINAL CONFIG path
                 cmd = [sys.executable, "-u", str(pycurv_script_path), str(config_path), str(vtp_file_arg)]
                 
                 print(f"--- Starting: {vtp_file.name} ---")
@@ -363,7 +393,7 @@ class PyCurvWidget(QWidget):
                     print(f"[ERROR] An unexpected error occurred while processing {vtp_file.name}: {e}")
                     return {'file_name': vtp_file.name, 'return_code': -1}
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=n_jobs) as executor:
                 future_to_file = {executor.submit(process_vtp_file, fp): fp for fp in selected_vtp_files}
                 for future in concurrent.futures.as_completed(future_to_file):
                     result = future.result()

@@ -37,8 +37,8 @@ class DistanceOrientationWidget(widgets.Container):
         settings.native.layout().setContentsMargins(3, 3, 3, 3)
 
         # Settings widgets
-        self.min_dist = widgets.SpinBox(value=3, min=0, max=1000, label='Min Distance')
-        self.max_dist = widgets.SpinBox(value=400, min=0, max=1000, label='Max Distance')
+        self.min_dist = widgets.FloatSpinBox(value=3.0, min=0.0, max=1000.0, step=0.1, label='Min Distance')
+        self.max_dist = widgets.FloatSpinBox(value=400.0, min=0.0, max=1000.0, step=0.1, label='Max Distance')
         self.tolerance = widgets.FloatSpinBox(value=0.1, min=0.0, max=1.0, step=0.01, label='Tolerance')
         self.verticality = widgets.CheckBox(value=True, label='Measure Verticality')
         self.relative_orientation = widgets.CheckBox(value=True, label='Measure Relative Orientation')
@@ -46,6 +46,9 @@ class DistanceOrientationWidget(widgets.Container):
         # Custom editors for intra/inter measurements
         self.intra_editor = IntraListEditor()
         self.inter_editor = InterDictEditor()
+        
+        self.n_jobs_input = widgets.SpinBox(value=1, min=1, max=128, label='Concurrent Jobs (Parallel Files)')
+        self.n_jobs_input.tooltip = "Number of files to process simultaneously."
 
         settings.extend([
             self.min_dist,
@@ -53,6 +56,7 @@ class DistanceOrientationWidget(widgets.Container):
             self.tolerance,
             self.verticality,
             self.relative_orientation,
+            self.n_jobs_input,
             widgets.Label(value='<b>Intra-membrane Measurements:</b>'),
             self.intra_editor,
             widgets.Label(value='<b>Inter-membrane Measurements:</b>'),
@@ -196,10 +200,10 @@ class DistanceOrientationWidget(widgets.Container):
              work_dir = Path(self.experiment_manager.work_dir.value)
              exp_name = self.experiment_manager.experiment_name.currentText()
              exp_dir = work_dir / exp_name
-             config_path = exp_dir / f"{exp_name}_config.yml"
+             archive_config_path = exp_dir / f"{exp_name}_config.yml"
              results_dir = exp_dir / 'results'
              
-             if not check_and_archive_outputs(self.native, results_dir, config_path=config_path, file_patterns=['*.csv', '*.svg', '*.png'], exclude_patterns=['*AVV*', '*VV*', '*.gt', '*_runtimes.csv']):
+             if not check_and_archive_outputs(self.native, results_dir, config_path=archive_config_path, file_patterns=['*.csv', '*.svg', '*.png'], exclude_patterns=['*AVV*', '*VV*', '*.gt', '*_runtimes.csv']):
                  return
         except Exception as e:
              print(f"Archive check failed: {e}")
@@ -248,9 +252,25 @@ class DistanceOrientationWidget(widgets.Container):
             processed_count = 0
             success_count = 0
             lock = threading.Lock()
-            max_workers = min(exp_config.get('cores', 1), total_files)
-
-            self.status.update_status(f'Processing {total_files} files...')
+            
+            # Explicit N_Jobs Logic
+            n_jobs = self.n_jobs_input.value
+            
+            # Distance scripts are single-threaded python, but may use OMP libraries.
+            # We assume 1 core per job primarily, unless configured otherwise in environment.
+            cores_per_job = 1
+            
+            # Validation (Warning only)
+            total_threads = n_jobs * cores_per_job
+            import os
+            sys_cores = os.cpu_count() or 1
+            if total_threads > sys_cores:
+                print(f"[WARNING] Requesting {total_threads} jobs on {sys_cores}-core system. System may freeze.")
+            
+            print(f"Cluster-Style Execution: Launching {n_jobs} parallel jobs.")
+            status_msg = f'Processing {total_files} files using {n_jobs} parallel jobs...'
+            self.status.update_status(status_msg)
+            print(status_msg)
             
             def process_mrc_file(mrc_file):
                 """
@@ -258,7 +278,6 @@ class DistanceOrientationWidget(widgets.Container):
                 the script into generating the correct filenames.
                 """
 
-                
                 exp_name = work_dir.parent.name
                 if work_dir.name != 'results':
                      # Fallback if structure is different
@@ -267,6 +286,7 @@ class DistanceOrientationWidget(widgets.Container):
                 link_name = f"{exp_name}{mrc_file.name}"
                 link_path = data_dir / link_name
                 
+                # Pass the ORIGINAL CONFIG path
                 cmd = [sys.executable, "-u", str(script_path), str(config_path), link_name]
                 print(f"--- Running for: {mrc_file.name} (using link: {link_name}) ---")
                 print(f"Executing: {' '.join(cmd)}")
@@ -297,7 +317,7 @@ class DistanceOrientationWidget(widgets.Container):
                     if os.path.islink(link_path):
                         os.remove(link_path)
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=n_jobs) as executor:
                 future_to_file = {executor.submit(process_mrc_file, f): f for f in mrc_files}
                 for future in concurrent.futures.as_completed(future_to_file):
                     result = future.result()
