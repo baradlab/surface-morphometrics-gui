@@ -550,10 +550,7 @@ class CustomVedoCutter(VedoCutter):
                 # Re-assign data without scalar values
                 layer.data = (vertices.copy(), faces.copy())
                 if layer in self._lit_layers:
-                    try:
-                        layer.shading = 'smooth'
-                    except Exception:
-                        pass
+                    QTimer.singleShot(200, lambda l=layer: self._restore_lighting(l))
             layer.metadata['active_property'] = 'solid_color'
             layer.name = layer.name.split(' [')[0] # Reset name
             self._update_ui_from_layer(layer)
@@ -603,12 +600,9 @@ class CustomVedoCutter(VedoCutter):
         layer.data = (vertices.copy(), faces.copy(), new_values)
 
         # Reassigning layer.data can rebuild the vispy visual, resetting
-        # the shading filter. Restore smooth shading for lit layers.
+        # the shading filter. Defer lighting restoration for lit layers.
         if layer in self._lit_layers:
-            try:
-                layer.shading = 'smooth'
-            except Exception:
-                pass
+            QTimer.singleShot(200, lambda l=layer: self._restore_lighting(l))
 
         # Update contrast limits and metadata
         finite_values = new_values[np.isfinite(new_values)]
@@ -965,6 +959,45 @@ class CustomVedoCutter(VedoCutter):
                 pass
             print(f"Warning: Could not set up lighting for {layer.name}: {e}")
 
+    def _restore_lighting(self, layer):
+        """Restore smooth shading after vispy visual rebuild.
+
+        Phase 1: set shading to 'smooth', then schedule phase 2 to
+        configure the light direction once vispy has created the filter.
+        """
+        try:
+            if layer not in self.viewer.layers:
+                return
+            layer.shading = 'smooth'
+            # Give vispy time to create the shading_filter after the
+            # shading property change, then configure light direction.
+            QTimer.singleShot(100, lambda l=layer: self._apply_light_dir(l, retries=5))
+        except Exception:
+            pass
+
+    def _apply_light_dir(self, layer, retries=5):
+        """Phase 2: set light_dir on the shading filter once it exists."""
+        try:
+            if layer not in self.viewer.layers:
+                return
+            visual = self._get_vispy_visual(layer)
+            if visual is None or visual.node.shading_filter is None:
+                if retries > 0:
+                    QTimer.singleShot(100, lambda l=layer, r=retries-1: self._apply_light_dir(l, r))
+                return
+            view_direction = np.asarray(self.viewer.camera.view_direction)
+            layer_view_dir = np.asarray(layer._world_to_data_ray(view_direction))
+            if hasattr(layer, '_slice_input'):
+                dims = layer._slice_input.displayed
+            elif hasattr(layer, '_dims_displayed'):
+                dims = layer._dims_displayed
+            else:
+                dims = list(range(layer.ndim))
+            layer_view_dir = layer_view_dir[dims]
+            visual.node.shading_filter.light_dir = layer_view_dir[::-1]
+        except Exception:
+            pass
+
     def _on_camera_angles_changed(self, event=None):
         """Update light direction on all lit layers to follow the camera."""
         try:
@@ -981,14 +1014,9 @@ class CustomVedoCutter(VedoCutter):
                 if visual is None:
                     continue
                 if visual.node.shading_filter is None:
-                    # Visual was rebuilt; restore smooth shading
-                    try:
-                        layer.shading = 'smooth'
-                        visual = self._get_vispy_visual(layer)
-                        if visual is None or visual.node.shading_filter is None:
-                            continue
-                    except Exception:
-                        continue
+                    # Filter destroyed by visual rebuild; trigger restoration
+                    QTimer.singleShot(200, lambda l=layer: self._restore_lighting(l))
+                    continue
                 # Transform view direction to layer data coordinates
                 layer_view_dir = np.asarray(
                     layer._world_to_data_ray(view_direction)
