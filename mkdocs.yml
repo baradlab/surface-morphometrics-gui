@@ -12,7 +12,7 @@ nav:
     - Visualization: guide/visualization.md
     - Resuming Experiments: guide/resuming-experiments.md
   - About: about.md
-site_url: https://sitename.example
+site_url: https://baradlab.github.io/surface-morphometrics-gui/
 theme:
   name: material
   palette:
