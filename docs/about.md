@@ -1,25 +1,21 @@
-# About Surface Morphometrics GUI
+# About
 
-## Project Overview
+## What is surface morphometrics?
 
-The Surface Morphometrics GUI is a graphical user interface for the Surface Morphometrics toolkit, designed to simplify the quantitative analysis of 3D surface meshes from cryo-electron tomography (cryo-ET). This tool provides researchers with an accessible interface for complex geometric analysis without requiring command-line programming expertise.
+Surface morphometrics is the quantitative analysis of surface geometry and topology in biological membranes and cellular structures. Starting from voxel segmentations of cryo-electron tomography (cryo-ET) data, the pipeline generates surface meshes and computes morphological measurements.
 
-## What is Surface Morphometrics?
+![Morphometrics Workflow](images/morphometrics_workflow.png)
 
-![Morphometrics Workflow](../images/morphometrics_workflow.png)
+## Core components
 
-Surface morphometrics is the quantitative analysis of surface geometry and topology, specifically focused on biological membranes and cellular structures. The toolkit generates robust open mesh surfaces from voxel segmentations and calculates morphological features including:
+| Component | What it does |
+|-----------|--------------|
+| **Mesh Generation** | Converts voxel segmentations into surface meshes using screened Poisson reconstruction |
+| **PyCurv** | Computes curvature measurements using a vector voting framework |
+| **Distance & Orientation** | Measures distances and relative orientations between surfaces |
+| **3D Visualization** | Interactive rendering of surfaces with property colormaps |
 
-- **Curvature Analysis**: Gaussian, mean, and principal curvatures using pycurv's vector voting framework
-- **Distance Measurements**: Intra- and inter-surface distances and orientations
-- **Topological Features**: Surface connectivity and structural relationships
+## References
 
-## Technical Architecture
-
-### Core Components
-The GUI provides access to the underlying Surface Morphometrics toolkit:
-
-- **Mesh Generation**: Robust surface reconstruction using Screened Poisson algorithm
-- **Curvature Calculation**: Pycurv-based vector voting framework for accurate curvature measurement
-- **Distance Analysis**: Intra- and inter-surface distance and orientation calculations
-- **3D Visualization**: Interactive 3D rendering of surfaces and quantification results
+- **Original pipeline**: [surface_morphometrics](https://github.com/GrotjahnLab/surface_morphometrics) by the Grotjahn Lab
+- **Paper**: Barad et al. (2023) — Quantitative analysis of membrane ultrastructure using cryo-ET surface morphometrics

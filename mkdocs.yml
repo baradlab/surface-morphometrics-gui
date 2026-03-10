@@ -1,17 +1,21 @@
 site_name: Surface Morphometrics GUI
 nav:
   - Home: index.md
+  - Getting Started:
+    - Installation: getting-started/installation.md
+    - Quick Start: getting-started/quickstart.md
+  - User Guide:
+    - Experiment Setup: guide/experiment-setup.md
+    - Surface Mesh Generation: guide/mesh-generation.md
+    - Curvature Analysis: guide/curvature-analysis.md
+    - Distance & Orientation: guide/distance-orientation.md
+    - Visualization: guide/visualization.md
+    - Resuming Experiments: guide/resuming-experiments.md
   - About: about.md
-  - Features:
-    - New Experiment: features/new-experiment.md
-    - Resume Experiment: features/resume-experiment.md
-  - Tutorials:
-    - Pipeline: tutorials/pipeline.md
-    - Visualization: tutorials/visualization.md
 site_url: https://sitename.example
-theme: 
+theme:
   name: material
-  palette: 
+  palette:
     scheme: slate
 
 # Markdown extensions
@@ -29,4 +33,3 @@ markdown_extensions:
   - pymdownx.superfences
   - pymdownx.tasklist
   - pymdownx.emoji
-
