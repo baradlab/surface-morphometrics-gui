@@ -847,8 +847,16 @@ python<span class="w"> </span>main.py
 <li>Set a <strong>Work Directory</strong> — where experiment folders will be created</li>
 <li>Enter an <strong>Experiment Name</strong></li>
 <li>Select your <strong>Data Directory</strong> — the folder with your segmentation files</li>
-<li>Choose a <strong>Config Template</strong> — a YAML file from the <code>surface_morphometrics</code> directory</li>
-<li>Set the number of <strong>Cores</strong> for parallel processing</li>
+<li>
+<p>Choose a <strong>Config Template</strong> — a YAML file from the <code>surface_morphometrics</code> directory</p>
+<div class="admonition warning">
+<p class="admonition-title">Config template location matters</p>
+<p>The GUI detects analysis scripts based on where your config template is located. <strong>Keep your config template inside the <code>surface_morphometrics</code> directory</strong> (the repository containing the pipeline scripts). If you move it elsewhere, the GUI will not find the scripts.</p>
+</div>
+</li>
+<li>
+<p>Set the number of <strong>Cores</strong> for parallel processing</p>
+</li>
 <li>Review the <strong>Segmentation Values</strong> populated from the template</li>
 <li>Click <strong>New Experiment</strong></li>
 </ol>
