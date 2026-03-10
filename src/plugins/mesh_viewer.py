@@ -1,5 +1,3 @@
-from napari_vedo_bridge._cutter_widget import VedoCutter
-from napari_vedo_bridge._cutter_widget import is_ragged
 import vtk
 from vtk.util import numpy_support
 import numpy as np
@@ -9,7 +7,7 @@ import glob
 from magicgui import widgets
 from qtpy.QtCore import QTimer
 from magicgui.widgets import FloatRangeSlider, FloatSpinBox
-from qtpy.QtWidgets import QSizePolicy, QScrollArea
+from qtpy.QtWidgets import QWidget, QVBoxLayout, QPushButton, QSizePolicy, QScrollArea, QFileDialog
 from qtpy.QtCore import Qt
 
 # We implement our own camera-following lighting directly on vispy's
@@ -25,21 +23,17 @@ except ImportError:
     print("Warning: libigl not available for ambient occlusion")
 
 
-class CustomVedoCutter(VedoCutter):
-    def __init__(self, *args, **kwargs):
-        self.viewer = args[0]
+class MeshViewer(QWidget):
+    def __init__(self, viewer, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.viewer = viewer
 
         # Initialize automatic lighting and ambient occlusion
         self._initialize_automatic_lighting_ao()
 
-        # Hide all UI elements from parent class
-        self._hide_parent_ui_elements()
-
-        # Extract the load mesh button from parent class
-        self.load_mesh_button = None
-        if hasattr(self, 'pushButton_load_mesh'):
-            self.load_mesh_button = self.pushButton_load_mesh
+        # Create main layout
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         # Create a completely new layout with just the essential controls
         self.controls_container = widgets.Container(layout='vertical', labels=True)
@@ -47,6 +41,13 @@ class CustomVedoCutter(VedoCutter):
         self.controls_container.native.setMinimumWidth(250)
         self.controls_container.native.layout().setSpacing(8)
         self.controls_container.native.layout().setContentsMargins(10, 10, 10, 10)
+
+        # Load Mesh button
+        self.load_mesh_button = QPushButton("Load Mesh")
+        self.load_mesh_button.setMinimumWidth(100)
+        self.load_mesh_button.setFixedHeight(28)
+        self.load_mesh_button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.load_mesh_button.clicked.connect(self._on_load_mesh_clicked)
 
         self.property_selector = widgets.ComboBox(
             label="Property",
@@ -77,14 +78,22 @@ class CustomVedoCutter(VedoCutter):
             tooltip="Toggle ambient occlusion effect on surface meshes"
         )
 
+        self.shading_selector = widgets.ComboBox(
+            label="Shading",
+            choices=['smooth', 'flat', 'none'],
+            value='smooth',
+            enabled=True,
+            tooltip="Select shading mode for the surface"
+        )
+
         # Universal contrast slider
         self.contrast_slider = FloatRangeSlider(
             label="Contrast",
             value=(0.0, 1.0),
             enabled=False,
-            readout=False,  
-            tracking=True, 
-            step=0.01,  # Set a reasonable step size
+            readout=False,
+            tracking=True,
+            step=0.01,
             tooltip="Adjust the data range for the colormap"
         )
         self.contrast_min = FloatSpinBox(
@@ -100,7 +109,7 @@ class CustomVedoCutter(VedoCutter):
             tooltip="Set maximum value for contrast"
         )
 
-        # Container for slider and spinboxes — vertical layout to avoid cramping
+        # Container for slider and spinboxes
         self.contrast_container = widgets.Container(layout='vertical', labels=True)
 
         # Min/Max row
@@ -116,46 +125,26 @@ class CustomVedoCutter(VedoCutter):
 
         self.stats_label = widgets.Label(value="No data loaded")
 
-        # Create a clean container for the load mesh button with a Mesh label beside it
-        if self.load_mesh_button:
-            mesh_row_container = widgets.Container(layout='horizontal')
-            mesh_display_label = widgets.Label(value="Mesh")
-            mesh_row_container.append(mesh_display_label)
+        # Build load mesh row
+        mesh_row_container = widgets.Container(layout='horizontal')
+        mesh_display_label = widgets.Label(value="Mesh")
+        mesh_row_container.append(mesh_display_label)
 
-            self.load_mesh_button.setMinimumWidth(100)
-            self.load_mesh_button.setFixedHeight(28)
-            self.load_mesh_button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-            button_container = widgets.Container()
-            button_container.native.layout().addWidget(self.load_mesh_button)
-            mesh_row_container.append(button_container)
-            
-            # Add the components to our controls
-            self.controls_container.extend([
-                mesh_row_container,
-                self.property_selector,
-                self.colormap_selector,
-                self.auto_apply,
-                self.ao_enabled,
-                self.stats_label,
-                self.contrast_container,
-            ])
-        else:
-            self.controls_container.extend([
-                self.property_selector,
-                self.colormap_selector,
-                self.auto_apply,
-                self.ao_enabled,
-                self.stats_label,
-                self.contrast_container,
-            ])
+        button_container = widgets.Container()
+        button_container.native.layout().addWidget(self.load_mesh_button)
+        mesh_row_container.append(button_container)
 
-        # Clear the existing layout and add our clean container
-        layout = self.layout()
-        while layout.count():
-            item = layout.takeAt(0)
-            widget = item.widget()
-            if widget:
-                widget.setParent(None)
+        # Add the components to our controls
+        self.controls_container.extend([
+            mesh_row_container,
+            self.property_selector,
+            self.colormap_selector,
+            self.auto_apply,
+            self.ao_enabled,
+            self.shading_selector,
+            self.stats_label,
+            self.contrast_container,
+        ])
 
         # Compact child widget internal margins while keeping outer spacing
         for i in range(self.controls_container.native.layout().count()):
@@ -187,29 +176,71 @@ class CustomVedoCutter(VedoCutter):
         self.contrast_min.changed.connect(self._on_contrast_min_changed)
         self.contrast_max.changed.connect(self._on_contrast_max_changed)
         self.ao_enabled.changed.connect(self._on_ao_toggled)
+        self.shading_selector.changed.connect(self._on_shading_changed)
 
-        # --- Auto-send to napari functionality ---
-        self.last_mesh_filename = None
-        self._start_auto_send_monitor()
+    def _on_load_mesh_clicked(self):
+        """Open a file dialog and load the selected mesh file."""
+        filepath, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Mesh File",
+            "",
+            "Mesh Files (*.vtp *.ply *.stl *.obj);;VTP Files (*.vtp);;PLY Files (*.ply);;STL Files (*.stl);;OBJ Files (*.obj);;All Files (*)"
+        )
+        if not filepath:
+            return
 
+        self._load_mesh_file(filepath)
 
+    def _load_mesh_file(self, filepath):
+        """Load a mesh file using VTK and add it to napari."""
+        ext = os.path.splitext(filepath)[1].lower()
 
-    def _start_auto_send_monitor(self):
-        """Start monitoring for new meshes and automatically send them to napari."""
-        self.mesh_monitor_timer = QTimer()
-        self.mesh_monitor_timer.timeout.connect(self._check_for_new_mesh)
-        self.mesh_monitor_timer.start(500)  # Check every 500ms
+        reader = None
+        if ext == '.vtp':
+            reader = vtk.vtkXMLPolyDataReader()
+        elif ext == '.ply':
+            reader = vtk.vtkPLYReader()
+        elif ext == '.stl':
+            reader = vtk.vtkSTLReader()
+        elif ext == '.obj':
+            reader = vtk.vtkOBJReader()
+        else:
+            print(f"Unsupported file format: {ext}")
+            return
 
-    def _check_for_new_mesh(self):
-        """Check if a new mesh has been loaded and send it to napari."""
-        try:
-            if hasattr(self, 'mesh') and self.mesh is not None:
-                current_filename = getattr(self.mesh, 'filename', None)
-                if current_filename and current_filename != self.last_mesh_filename:
-                    self.last_mesh_filename = current_filename
-                    self.send_to_napari()
-        except Exception:
-            pass
+        reader.SetFileName(filepath)
+        reader.Update()
+        polydata = reader.GetOutput()
+
+        if polydata is None or polydata.GetNumberOfPoints() == 0:
+            print(f"Failed to load mesh from {filepath}")
+            return
+
+        # Extract vertices
+        vtk_points = polydata.GetPoints()
+        vertices = numpy_support.vtk_to_numpy(vtk_points.GetData())
+
+        # Extract faces
+        vtk_cells = polydata.GetPolys()
+        if vtk_cells is None or vtk_cells.GetNumberOfCells() == 0:
+            print(f"No polygon data in {filepath}")
+            return
+
+        cell_array = numpy_support.vtk_to_numpy(vtk_cells.GetData())
+        # VTK cell array format: [n_verts, v0, v1, v2, n_verts, v0, v1, v2, ...]
+        # For triangles: [3, v0, v1, v2, 3, v0, v1, v2, ...]
+        n_cells = vtk_cells.GetNumberOfCells()
+        # Assume triangular faces (stride of 4: count + 3 vertices)
+        faces = cell_array.reshape(n_cells, -1)[:, 1:]  # skip the vertex count column
+
+        # Default scalar values (ones so AO can attenuate them)
+        values = np.ones(len(vertices))
+        mesh_tuple = (vertices, faces, values)
+
+        name = os.path.splitext(os.path.basename(filepath))[0]
+        metadata = {'source_vtp_path': filepath}
+
+        self.viewer.add_surface(mesh_tuple, name=name, metadata=metadata)
 
     def _is_vtp_surface_layer(self, layer):
         """Checks if a layer is a Surface derived from a VTP file."""
@@ -231,10 +262,8 @@ class CustomVedoCutter(VedoCutter):
 
         # Check if layer name suggests it's from VTP (including renamed layers)
         if hasattr(layer, 'name') and layer.name:
-            # Check for VTP file extension
             if '.vtp' in layer.name.lower():
                 return True
-            # Check for property names in layer name (e.g., "Mesh [Cell_gauss_curvature]")
             if '[' in layer.name and ']' in layer.name:
                 property_part = layer.name.split('[')[1].split(']')[0]
                 if property_part.startswith(('Cell_', 'Point_')):
@@ -243,7 +272,6 @@ class CustomVedoCutter(VedoCutter):
         # Check if layer has scalar data (might be from VTP)
         if hasattr(layer, 'data') and len(layer.data) == 3:
             vertices, faces, values = layer.data
-            # If it has scalar data, it might be from VTP
             if values is not None and len(values) > 0:
                 return True
 
@@ -253,7 +281,6 @@ class CustomVedoCutter(VedoCutter):
         """Handle new layer insertion."""
         layer = event.value
 
-        # Check if this is a Surface layer with data
         if isinstance(layer, Surface):
             # 1. Initialize VTP data (loads scalars, sets initial property)
             self._initialize_vtp_layer(layer)
@@ -265,7 +292,6 @@ class CustomVedoCutter(VedoCutter):
         """Update UI when the active layer changes."""
         layer = event.value
         if layer and isinstance(layer, Surface):
-            # If layer is not initialized, do it now.
             if not layer.metadata.get('vtp_initialized'):
                 self._initialize_vtp_layer(layer)
             self._update_ui_from_layer(layer)
@@ -285,8 +311,6 @@ class CustomVedoCutter(VedoCutter):
 
         vtp_path = None
 
-        # --- File Finding Logic ---
-
         # Priority 1: Check for a source path embedded in metadata (most reliable)
         if layer.metadata.get('source_vtp_path'):
             candidate_path = layer.metadata['source_vtp_path']
@@ -299,9 +323,9 @@ class CustomVedoCutter(VedoCutter):
             if os.path.exists(candidate_path):
                 vtp_path = candidate_path
 
-        # Priority 3: Search filesystem and match name, or use single-file heuristic as last resort
+        # Priority 3: Search filesystem and match name, or use single-file heuristic
         if not vtp_path:
-            search_dirs = {os.getcwd(), os.path.dirname(os.getcwd())} # Use set to avoid duplicates
+            search_dirs = {os.getcwd(), os.path.dirname(os.getcwd())}
 
             all_vtp_files = []
             for d in search_dirs:
@@ -309,14 +333,12 @@ class CustomVedoCutter(VedoCutter):
 
             unique_vtp_files = list(set(all_vtp_files))
 
-            # Try to match layer name to a file in the list
             for f_path in unique_vtp_files:
                 base_filename = os.path.splitext(os.path.basename(f_path))[0]
                 if layer.name.startswith(base_filename):
                     vtp_path = f_path
                     break
 
-            # If no match is found and there is only ONE vtp file, assume it's the one.
             if not vtp_path and len(unique_vtp_files) == 1:
                 vtp_path = unique_vtp_files[0]
 
@@ -332,23 +354,19 @@ class CustomVedoCutter(VedoCutter):
             reader.SetFileName(vtp_path)
             reader.Update()
 
-            # Get both point and cell data
             polydata = reader.GetOutput()
             point_data = polydata.GetPointData()
             cell_data = polydata.GetCellData()
 
-            # Cache all scalar arrays in metadata
             scalar_data = {}
             scalar_names = []
 
-            # Process point data
             for i in range(point_data.GetNumberOfArrays()):
                 array = point_data.GetArray(i)
                 name = point_data.GetArrayName(i)
                 scalar_names.append(f"Point_{name}")
                 scalar_data[f"Point_{name}"] = numpy_support.vtk_to_numpy(array)
 
-            # Process cell data
             for i in range(cell_data.GetNumberOfArrays()):
                 array = cell_data.GetArray(i)
                 name = cell_data.GetArrayName(i)
@@ -363,16 +381,11 @@ class CustomVedoCutter(VedoCutter):
             layer.metadata['vtp_scalar_names'] = scalar_names
             layer.metadata['vtp_path'] = vtp_path
 
-            # Determine initial property to display
             initial_property = self._select_initial_scalar(scalar_names)
 
             if initial_property:
-                # Apply the property and let auto-colormap handle the rest
                 self._update_layer_data(layer, initial_property)
-
                 layer.metadata['vtp_initialized'] = True
-
-                # Update UI after successful initialization
                 self._update_ui_from_layer(layer)
             else:
                 self._extract_data_from_layer(layer)
@@ -381,35 +394,28 @@ class CustomVedoCutter(VedoCutter):
             print(f"Error loading VTP file: {e}")
             import traceback
             traceback.print_exc()
-            # Fallback to extracting data from existing layer
             self._extract_data_from_layer(layer)
 
     def _extract_data_from_layer(self, layer):
         """Extract data from existing layer if VTP file is not available."""
-        # Check if layer already has scalar data
         if len(layer.data) == 3:
             vertices, faces, values = layer.data
 
-            # Create a simple property name
             scalar_data = {'Current_Values': values}
             scalar_names = ['Current_Values']
 
             layer.metadata['vtp_scalar_data'] = scalar_data
             layer.metadata['vtp_scalar_names'] = scalar_names
             layer.metadata['vtp_initialized'] = True
-
-            # Set initial property
             layer.metadata['active_property'] = 'Current_Values'
 
-            # Update UI
             self._update_ui_from_layer(layer)
 
     def _create_user_friendly_names(self, scalar_names):
         """Create a clean list of property names, similar to the raw names in Paraview."""
         friendly_names = {}
-        display_names = ["Solid Color"] # Add Solid Color option at the top
+        display_names = ["Solid Color"]
 
-        # Original names map to themselves for simplicity
         for name in scalar_names:
             if name.startswith('Point_'):
                 clean_name = name[6:]
@@ -421,14 +427,12 @@ class CustomVedoCutter(VedoCutter):
             friendly_names[clean_name] = name
             display_names.append(clean_name)
 
-        # Add a mapping for Solid Color to a placeholder
         friendly_names['Solid Color'] = 'solid_color'
 
         return friendly_names, display_names
 
     def _select_initial_scalar(self, scalar_names):
         """Select the best initial scalar to display."""
-        # Priority order for different property types
         priority_arrays = [
             'gauss_curvature', 'mean_curvature', 'min_curvature', 'max_curvature',
             'shape_index_VV', 'curvedness_VV',
@@ -437,13 +441,11 @@ class CustomVedoCutter(VedoCutter):
             'kappa_1', 'kappa_2'
         ]
 
-        # Check for priority arrays (case insensitive)
         for priority in priority_arrays:
             for name in scalar_names:
                 if priority.lower() in name.lower():
                     return name
 
-        # Fallback to first available array
         if scalar_names:
             return scalar_names[0]
 
@@ -470,7 +472,6 @@ class CustomVedoCutter(VedoCutter):
                     current_friendly = friendly
                     break
 
-            # If not found, use the first available
             if current_friendly is None or current_friendly not in display_names:
                 current_friendly = display_names[0]
                 current_property = friendly_names[current_friendly]
@@ -479,41 +480,43 @@ class CustomVedoCutter(VedoCutter):
             self.property_selector.value = current_friendly
             self.property_selector.enabled = True
 
-        # Update colormap selector
         with self.colormap_selector.changed.blocked():
             self.colormap_selector.value = layer.colormap.name
             self.colormap_selector.enabled = True
 
-        # Enable auto-apply
         self.auto_apply.enabled = True
 
-        # Update statistics and preview
         self._update_statistics(layer)
-
-        # Update contrast slider state
         self._update_contrast_slider_state(layer)
 
-
-    
-    def _on_ao_toggled(self, value):
-        """Handle AO checkbox toggle — reapply current property with or without AO."""
+    def _find_active_surface_layer(self):
+        """Find the active surface layer, falling back to any VTP surface layer."""
         layer = self.viewer.layers.selection.active
-        if not layer or not self._is_vtp_surface_layer(layer):
-            for potential_layer in self.viewer.layers:
-                if self._is_vtp_surface_layer(potential_layer):
-                    layer = potential_layer
-                    break
         if layer and self._is_vtp_surface_layer(layer):
+            return layer
+        for potential_layer in self.viewer.layers:
+            if self._is_vtp_surface_layer(potential_layer):
+                return potential_layer
+        return None
+
+    def _on_ao_toggled(self, value):
+        """Handle AO checkbox toggle."""
+        layer = self._find_active_surface_layer()
+        if layer:
             active = layer.metadata.get('active_property')
             if active and active != 'solid_color':
                 self._update_layer_data(layer, active)
 
+    def _on_shading_changed(self, value):
+        """Handle shading mode change."""
+        layer = self._find_active_surface_layer()
+        if layer:
+            self._setup_shading(layer)
+
     def _on_property_changed(self, new_property: str):
         """Handle user selecting a new property from the dropdown."""
-        # Try to find the active layer
         layer = self.viewer.layers.selection.active
 
-        # If no active layer, try to find any VTP layer
         if not layer or not self._is_vtp_surface_layer(layer):
             for potential_layer in self.viewer.layers:
                 if self._is_vtp_surface_layer(potential_layer):
@@ -521,12 +524,11 @@ class CustomVedoCutter(VedoCutter):
                     break
 
         if layer and self._is_vtp_surface_layer(layer):
-            # Map the friendly name back to the original property name
             friendly_names = layer.metadata.get('friendly_names', {})
             original_property = friendly_names.get(new_property, new_property)
 
             self._update_layer_data(layer, original_property)
-            self._update_ui_from_layer(layer)  # Refresh UI with new data
+            self._update_ui_from_layer(layer)
 
     def _on_colormap_changed(self, new_colormap: str):
         """Handle user selecting a new colormap from the dropdown."""
@@ -547,12 +549,10 @@ class CustomVedoCutter(VedoCutter):
         if scalar_array_name == 'solid_color':
             if len(layer.data) == 3:
                 vertices, faces, _ = layer.data
-                # Re-assign data without scalar values
                 layer.data = (vertices.copy(), faces.copy())
-                if layer in self._lit_layers:
-                    QTimer.singleShot(200, lambda l=layer: self._restore_lighting(l))
+                self._setup_shading(layer)
             layer.metadata['active_property'] = 'solid_color'
-            layer.name = layer.name.split(' [')[0] # Reset name
+            layer.name = layer.name.split(' [')[0]
             self._update_ui_from_layer(layer)
             return
 
@@ -562,32 +562,33 @@ class CustomVedoCutter(VedoCutter):
         if new_values is None:
             return
 
-        # Get the current geometry, being robust to the layer's data structure
         if len(layer.data) == 3:
             vertices, faces, _ = layer.data
         else:
             vertices, faces = layer.data
 
-        # Check if we need to convert cell data to vertex data
         n_vertices = len(vertices)
         n_values = len(new_values)
 
-        # Check if this is vector data (3D vectors) or scalar data
         is_vector_data = len(new_values.shape) > 1 and new_values.shape[1] == 3
 
         if n_values != n_vertices:
             if is_vector_data:
-                # Convert cell vector data to vertex vector data
                 vertex_values = self._cell_to_vertex_interpolation_vector(faces, new_values, n_vertices)
             else:
-                # Convert cell scalar data to vertex scalar data
                 vertex_values = self._cell_to_vertex_interpolation(faces, new_values, n_vertices)
             new_values = vertex_values
 
-        # If the values array is multi-dimensional, convert it to a 1D scalar
-        # array for napari to use it for coloring by calculating the magnitude.
         if len(new_values.shape) > 1:
             new_values = np.linalg.norm(new_values, axis=1)
+
+        # Compute contrast limits from the ORIGINAL data (before AO)
+        # so that AO-darkened areas actually appear darker in the colormap.
+        finite_values = new_values[np.isfinite(new_values)]
+        if len(finite_values) > 0:
+            original_limits = (float(np.min(finite_values)), float(np.max(finite_values)))
+        else:
+            original_limits = (0.0, 1.0)
 
         # Apply ambient occlusion if available and enabled
         ao_factors = layer.metadata.get('ao_factors')
@@ -595,53 +596,38 @@ class CustomVedoCutter(VedoCutter):
             if len(new_values.shape) == 1 and len(ao_factors) == len(new_values):
                 new_values = new_values * ao_factors
 
-        # Re-assign the layer's data. Using .copy() for the geometry arrays
-        # helps ensure that napari's change detection is triggered.
         layer.data = (vertices.copy(), faces.copy(), new_values)
 
-        # Reassigning layer.data can rebuild the vispy visual, resetting
-        # the shading filter. Defer lighting restoration for lit layers.
-        if layer in self._lit_layers:
-            QTimer.singleShot(200, lambda l=layer: self._restore_lighting(l))
+        # Reassigning layer.data rebuilds the vispy visual; re-apply shading
+        self._setup_shading(layer)
 
-        # Update contrast limits and metadata
-        finite_values = new_values[np.isfinite(new_values)]
-        if len(finite_values) > 0:
-            layer.contrast_limits = (np.min(finite_values), np.max(finite_values))
-        else:
-            layer.contrast_limits = (0, 1)
+        # Use the original (pre-AO) range for contrast limits
+        layer.contrast_limits = original_limits
         layer.metadata['active_property'] = scalar_array_name
 
-        # Update layer name
         base_name = layer.name.split(' [')[0]
         layer.name = f'{base_name} [{scalar_array_name}]'
 
-        # Safely ensure the layer remains selected after the update
         try:
             if layer not in self.viewer.layers.selection:
                 self.viewer.layers.selection.add(layer)
         except Exception:
             pass
 
-        # Automatically apply appropriate colormap
         if self.auto_apply.value:
             self._apply_auto_colormap(layer, scalar_array_name, new_values)
 
     def _cell_to_vertex_interpolation_vector(self, faces, cell_values, n_vertices):
         """Convert cell-based vector data to vertex-based vector data by averaging."""
-        # Initialize vertex values array for 3D vectors
         vertex_values = np.zeros((n_vertices, 3))
         vertex_counts = np.zeros(n_vertices)
 
-        # For each face, add its vector value to all its vertices
         for i, face in enumerate(faces):
-            face_vector = cell_values[i]  # This is a 3D vector
+            face_vector = cell_values[i]
             for vertex_idx in face:
                 vertex_values[vertex_idx] += face_vector
                 vertex_counts[vertex_idx] += 1
 
-        # Average the vectors for each vertex
-        # Avoid division by zero
         vertex_counts[vertex_counts == 0] = 1
         vertex_values = vertex_values / vertex_counts[:, np.newaxis]
 
@@ -649,19 +635,15 @@ class CustomVedoCutter(VedoCutter):
 
     def _cell_to_vertex_interpolation(self, faces, cell_values, n_vertices):
         """Convert cell-based scalar data to vertex-based data by averaging."""
-        # Initialize vertex values array
         vertex_values = np.zeros(n_vertices)
         vertex_counts = np.zeros(n_vertices)
 
-        # For each face, add its value to all its vertices
         for i, face in enumerate(faces):
             face_value = cell_values[i]
             for vertex_idx in face:
                 vertex_values[vertex_idx] += face_value
                 vertex_counts[vertex_idx] += 1
 
-        # Average the values for each vertex
-        # Avoid division by zero
         vertex_counts[vertex_counts == 0] = 1
         vertex_values = vertex_values / vertex_counts
 
@@ -683,81 +665,21 @@ class CustomVedoCutter(VedoCutter):
 
             self.stats_label.value = stats_text
 
-    def _hide_parent_ui_elements(self):
-        """Hide all UI elements from parent VedoCutter class that we don't want to show."""
-        # Hide the VTK widget (3D viewer)
-        if hasattr(self, 'vtkWidget'):
-            self.vtkWidget.hide()
-
-        # Hide all buttons except load mesh
-        for btn_name in [
-            "pushButton_box_cutter",
-            "pushButton_sphere_cutter",
-            "pushButton_plane_cutter",
-            "pushButton_send_back",
-            "pushButton_get_from_napari"
-        ]:
-            btn = getattr(self, btn_name, None)
-            if btn is not None:
-                btn.hide()
-
-        # Hide all labels, containers, frames and boxes
-        for widget_name in [
-            "label",
-            "label_cutting_tools",
-            "cutting_tools_container",
-            "cutting_tools_label",
-            "frame",
-            "groupBox"
-        ]:
-            widget = getattr(self, widget_name, None)
-            if widget is not None:
-                widget.hide()
-
-    def send_to_napari(self):
-        """Override the default send_to_napari to embed metadata."""
-        if self.mesh is None:
-            print("ERROR: No vedo mesh to send to napari.")
-            return
-
-        points = self.mesh.vertices
-        faces = np.asarray(self.mesh.cells)
-        # Include default values so AO can attenuate them
-        values = np.ones(len(points))
-        mesh_tuple = (points, faces, values)
-
-        filepath = self.mesh.filename
-        if filepath:
-            name = os.path.splitext(os.path.basename(filepath))[0]
-        else:
-            name = "vedo_mesh"
-
-        # --- CRITICAL: Embed the source path in the metadata ---
-        metadata = {'source_vtp_path': filepath}
-
-        # Add surface with metadata
-        surface_layer = self.viewer.add_surface(mesh_tuple, name=name, metadata=metadata)
-
     def _apply_auto_colormap(self, layer, property_name, data):
-        """Automatically apply appropriate colormap based on property type ."""
+        """Automatically apply appropriate colormap based on property type."""
         property_lower = property_name.lower()
 
-        # Check if data is diverging (crosses zero)
         is_diverging = np.nanmin(data) < 0 and np.nanmax(data) > 0
 
-
         if 'orientation' in property_lower:
-            layer.colormap = 'hsv'  # Circular colormap for orientation
+            layer.colormap = 'hsv'
         elif 'shape_index' in property_lower:
-            layer.colormap = 'Spectral' # Standard for shape index
+            layer.colormap = 'Spectral'
         elif is_diverging:
-            # Use coolwarm for any diverging data (e.g., curvature)
             layer.colormap = 'coolwarm'
         else:
-            # Use viridis for sequential data (e.g., area, magnitude)
             layer.colormap = 'viridis'
 
-        # Update colormap selector to reflect the change
         with self.colormap_selector.changed.blocked():
             self.colormap_selector.value = layer.colormap.name
 
@@ -768,11 +690,10 @@ class CustomVedoCutter(VedoCutter):
             return
 
         all_values = layer.metadata['vtp_scalar_data'][active_property]
-        # Skip vector/multi-dimensional properties (e.g. normals with shape (N, 3))
         if hasattr(all_values, 'ndim') and all_values.ndim > 1:
             self.contrast_container.visible = False
             return
-        finite_values = all_values[np.isfinite(all_values)] if hasattr(all_values, 'ravel') else all_values[np.isfinite(all_values)]
+        finite_values = all_values[np.isfinite(all_values)]
         if len(finite_values) == 0:
             self.contrast_container.visible = False
             return
@@ -789,9 +710,7 @@ class CustomVedoCutter(VedoCutter):
 
         current_min, current_max = layer.contrast_limits
 
-        # Update all widgets with new bounds and values
         with self.contrast_slider.changed.blocked(), self.contrast_min.changed.blocked(), self.contrast_max.changed.blocked():
-            # Set bounds for all widgets
             self.contrast_slider.min = data_min
             self.contrast_slider.max = data_max
             self.contrast_min.min = data_min
@@ -799,19 +718,15 @@ class CustomVedoCutter(VedoCutter):
             self.contrast_max.min = data_min
             self.contrast_max.max = data_max
 
-            # Clamp current values to data range
             clamped_min = max(min(current_min, data_max), data_min)
             clamped_max = max(min(current_max, data_max), data_min)
 
-            # Get actual widget bounds
             actual_min = self.contrast_min.min
             actual_max = self.contrast_max.max
 
-            # Clamp to actual widget bounds
             final_min = max(min(clamped_min, actual_max), actual_min)
             final_max = max(min(clamped_max, actual_max), actual_min)
 
-            # Set values
             self.contrast_slider.value = (final_min, final_max)
             self.contrast_min.value = final_min
             self.contrast_max.value = final_max
@@ -834,7 +749,6 @@ class CustomVedoCutter(VedoCutter):
             if min_val > max_val:
                 min_val = max_val
             layer.contrast_limits = (min_val, max_val)
-            # Sync slider with bounds checking
             with self.contrast_slider.changed.blocked():
                 clamped_min = max(min(min_val, self.contrast_slider.max), self.contrast_slider.min)
                 clamped_max = max(min(max_val, self.contrast_slider.max), self.contrast_slider.min)
@@ -848,19 +762,13 @@ class CustomVedoCutter(VedoCutter):
             if max_val < min_val:
                 max_val = min_val
             layer.contrast_limits = (min_val, max_val)
-            # Sync slider with bounds checking
             with self.contrast_slider.changed.blocked():
                 clamped_min = max(min(min_val, self.contrast_slider.max), self.contrast_slider.min)
                 clamped_max = max(min(max_val, self.contrast_slider.max), self.contrast_slider.min)
                 self.contrast_slider.value = (clamped_min, clamped_max)
 
     def _initialize_automatic_lighting_ao(self):
-        """Initialize camera-following lighting and ambient occlusion."""
-        # Layers with smooth shading that need light direction updates
-        self._lit_layers = []
-        self._camera_connected = False
-
-        # Track layers that have been processed
+        """Initialize ambient occlusion and smooth shading."""
         self.processed_layers = set()
 
     def _get_vispy_visual(self, layer):
@@ -871,13 +779,7 @@ class CustomVedoCutter(VedoCutter):
             return None
 
     def _compute_ao_factors(self, vertices, faces):
-        """Compute per-vertex ambient occlusion using normal divergence.
-
-        Measures how much neighboring vertex normals diverge from the vertex
-        normal.  In concave regions (crevices/valleys), neighbor normals point
-        away from each other → lower average dot product → more occlusion.
-        On convex ridges, normals align → less occlusion.
-        """
+        """Compute per-vertex ambient occlusion using normal divergence."""
         normals = igl.per_vertex_normals(vertices, faces)
         adj = igl.adjacency_list(faces)
         n_verts = len(vertices)
@@ -888,30 +790,24 @@ class CustomVedoCutter(VedoCutter):
             if len(neighbors) < 2:
                 raw_ao[i] = 1.0
                 continue
-            # Average dot product between this vertex's normal and neighbors'
             neighbor_normals = normals[neighbors]
             dots = neighbor_normals @ normals[i]
             raw_ao[i] = np.mean(dots)
 
-        # raw_ao ranges roughly from -1 (deep crevice) to 1 (exposed peak)
-        # Map to [0, 1] range: -1 → heavily occluded, 1 → no occlusion
-        # Then remap to a useful visual range [ao_min, 1.0]
-        ao_min = 0.25  # darkest occlusion factor
-        ao_normalized = np.clip((raw_ao + 1.0) / 2.0, 0, 1)  # map [-1,1] to [0,1]
+        ao_min = 0.25
+        ao_normalized = np.clip((raw_ao + 1.0) / 2.0, 0, 1)
         ao_factors = ao_min + (1.0 - ao_min) * ao_normalized
         return ao_factors
 
     def _apply_automatic_lighting_ao(self, layer):
-        """Apply ambient occlusion and camera-following lighting to a surface layer."""
+        """Apply ambient occlusion and smooth shading to a surface layer."""
         if not isinstance(layer, Surface):
             return
 
-        # Skip if already processed
         if layer in self.processed_layers:
             return
         self.processed_layers.add(layer)
 
-        # Compute and store AO factors synchronously (geometry-only, no vispy needed)
         if IGL_AVAILABLE:
             try:
                 if len(layer.data) >= 2:
@@ -920,117 +816,41 @@ class CustomVedoCutter(VedoCutter):
                         vertices, faces.astype(int)
                     )
                     layer.metadata['ao_factors'] = ao_factors
-                    # Reapply current property with AO
                     active = layer.metadata.get('active_property')
                     if active and active != 'solid_color':
                         self._update_layer_data(layer, active)
             except Exception as e:
                 print(f"Warning: AO computation failed for {layer.name}: {e}")
 
-        # Defer lighting setup until the vispy visual node is fully created
-        QTimer.singleShot(200, lambda l=layer: self._deferred_lighting_setup(l))
+        self._setup_shading(layer)
 
-    def _deferred_lighting_setup(self, layer):
-        """Set up smooth shading with camera-following light after vispy is ready."""
+    def _setup_shading(self, layer):
+        """Configure shading based on the current selector value."""
         try:
             if layer not in self.viewer.layers:
                 return
-
-            layer.shading = 'smooth'
-
-            visual = self._get_vispy_visual(layer)
-            if visual is None or visual.node.shading_filter is None:
-                layer.shading = 'none'
-                return
-
-            self._lit_layers.append(layer)
-
-            # Connect camera angle changes once
-            if not self._camera_connected:
-                self.viewer.camera.events.angles.connect(self._on_camera_angles_changed)
-                self._camera_connected = True
-
-            # Set initial light direction
-            self._on_camera_angles_changed()
+            layer.shading = self.shading_selector.value
+            if layer.shading != 'none':
+                QTimer.singleShot(200, lambda l=layer: self._configure_shading_filter(l))
         except Exception as e:
-            try:
-                layer.shading = 'none'
-            except Exception:
-                pass
-            print(f"Warning: Could not set up lighting for {layer.name}: {e}")
+            print(f"Warning: Could not set up shading for {layer.name}: {e}")
 
-    def _restore_lighting(self, layer):
-        """Restore smooth shading after vispy visual rebuild.
-
-        Phase 1: set shading to 'smooth', then schedule phase 2 to
-        configure the light direction once vispy has created the filter.
-        """
-        try:
-            if layer not in self.viewer.layers:
-                return
-            layer.shading = 'smooth'
-            # Give vispy time to create the shading_filter after the
-            # shading property change, then configure light direction.
-            QTimer.singleShot(100, lambda l=layer: self._apply_light_dir(l, retries=5))
-        except Exception:
-            pass
-
-    def _apply_light_dir(self, layer, retries=5):
-        """Phase 2: set light_dir on the shading filter once it exists."""
+    def _configure_shading_filter(self, layer, retries=5):
+        """Configure the vispy shading filter with directional lighting."""
         try:
             if layer not in self.viewer.layers:
                 return
             visual = self._get_vispy_visual(layer)
             if visual is None or visual.node.shading_filter is None:
                 if retries > 0:
-                    QTimer.singleShot(100, lambda l=layer, r=retries-1: self._apply_light_dir(l, r))
+                    QTimer.singleShot(100, lambda l=layer, r=retries-1: self._configure_shading_filter(l, r))
                 return
-            view_direction = np.asarray(self.viewer.camera.view_direction)
-            layer_view_dir = np.asarray(layer._world_to_data_ray(view_direction))
-            if hasattr(layer, '_slice_input'):
-                dims = layer._slice_input.displayed
-            elif hasattr(layer, '_dims_displayed'):
-                dims = layer._dims_displayed
-            else:
-                dims = list(range(layer.ndim))
-            layer_view_dir = layer_view_dir[dims]
-            visual.node.shading_filter.light_dir = layer_view_dir[::-1]
+            sf = visual.node.shading_filter
+            # Moderate ambient so AO darkening and flat/smooth differences
+            # are clearly visible, with strong directional light.
+            sf.ambient_light = (1, 1, 1, 0.35)
+            sf.diffuse_light = (1, 1, 1, 0.55)
+            sf.specular_light = (1, 1, 1, 0.1)
+            sf.light_dir = (0, -1, 1)
         except Exception:
             pass
-
-    def _on_camera_angles_changed(self, event=None):
-        """Update light direction on all lit layers to follow the camera."""
-        try:
-            view_direction = np.asarray(self.viewer.camera.view_direction)
-        except Exception:
-            return
-
-        for layer in list(self._lit_layers):
-            try:
-                if layer not in self.viewer.layers:
-                    self._lit_layers.remove(layer)
-                    continue
-                visual = self._get_vispy_visual(layer)
-                if visual is None:
-                    continue
-                if visual.node.shading_filter is None:
-                    # Filter destroyed by visual rebuild; trigger restoration
-                    QTimer.singleShot(200, lambda l=layer: self._restore_lighting(l))
-                    continue
-                # Transform view direction to layer data coordinates
-                layer_view_dir = np.asarray(
-                    layer._world_to_data_ray(view_direction)
-                )
-                # napari uses dims_displayed to pick the right 3 axes
-                if hasattr(layer, '_slice_input'):
-                    dims = layer._slice_input.displayed
-                elif hasattr(layer, '_dims_displayed'):
-                    dims = layer._dims_displayed
-                else:
-                    dims = list(range(layer.ndim))
-                layer_view_dir = layer_view_dir[dims]
-                visual.node.shading_filter.light_dir = layer_view_dir[::-1]
-            except Exception:
-                pass
-
-

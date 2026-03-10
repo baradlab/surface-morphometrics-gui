@@ -82,6 +82,16 @@ class MeshGenerationWidget(QWidget):
             self.submit_btn,
             self.status
         ])
+
+        # Compact the layout: reduce spacing and margins on the main container and children
+        self.container.native.layout().setSpacing(4)
+        self.container.native.layout().setContentsMargins(10, 10, 10, 10)
+        header.native.layout().setSpacing(2)
+        header.native.layout().setContentsMargins(0, 0, 0, 0)
+        self.status.native.layout().setSpacing(2)
+        self.status.native.layout().setContentsMargins(0, 0, 0, 0)
+        # Push everything to the top
+        self.container.native.layout().addStretch(1)
         
         ##testing
         # Listen for config_loaded signal to update UI on resume

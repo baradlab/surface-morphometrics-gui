@@ -1,5 +1,4 @@
 napari-threedee
-napari-vedo-bridge
 magicgui
 qtpy
 ruamel.yaml

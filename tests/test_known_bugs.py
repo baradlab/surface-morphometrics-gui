@@ -218,8 +218,8 @@ class TestBug9_BackupNotCleaned:
 class TestBug10_TimeSleep:
     """Bug #10: time.sleep(0.1) in UI thread."""
 
-    def test_no_sleep_in_ensure_shading(self):
-        from plugins.custom_vedo_cutter import CustomVedoCutter
-        source = inspect.getsource(CustomVedoCutter._ensure_surface_shading_initialized)
+    def test_no_sleep_in_shading_setup(self):
+        from plugins.mesh_viewer import MeshViewer
+        source = inspect.getsource(MeshViewer._setup_shading)
         assert "time.sleep" not in source, \
-            "_ensure_surface_shading_initialized should not use time.sleep in UI thread"
+            "_setup_shading should not use time.sleep in UI thread"

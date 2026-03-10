@@ -301,7 +301,6 @@ dependencies:
       - napari-threedee==0.0.29.dev6+ge7b676e
       - napari-timelapse-processor==0.1.1
       - napari-tomoslice==0.2.1
-      - napari-vedo-bridge==0.1.dev152+g6f3c69d
       - nbclient==0.10.2
       - nbconvert==7.16.6
       - nbformat==5.10.4
@@ -394,7 +393,6 @@ dependencies:
       - typing-inspection==0.4.1
       - uri-template==1.3.0
       - urllib3==2.5.0
-      - vedo==2025.5.4
       - vispy==0.14.3
       - vtk==9.5.0
       - wcwidth==0.2.13
