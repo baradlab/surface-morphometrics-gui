@@ -8,25 +8,31 @@
       
       
       
+        <link rel="canonical" href="https://sitename.example/guide/mesh-generation/">
       
+      
+        <link rel="prev" href="../experiment-setup/">
+      
+      
+        <link rel="next" href="../curvature-analysis/">
       
       
         
       
       
-      <link rel="icon" href="/assets/images/favicon.png">
+      <link rel="icon" href="../../assets/images/favicon.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.4">
     
     
       
-        <title>Surface Morphometrics GUI</title>
+        <title>Surface Mesh Generation - Surface Morphometrics GUI</title>
       
     
     
-      <link rel="stylesheet" href="/assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
       
         
-        <link rel="stylesheet" href="/assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
       
       
 
@@ -45,7 +51,7 @@
       
     
     
-    <script>__md_scope=new URL("/",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -67,6 +73,11 @@
     <label class="md-overlay" for="__drawer"></label>
     <div data-md-component="skip">
       
+        
+        <a href="#surface-mesh-generation" class="md-skip">
+          Skip to content
+        </a>
+      
     </div>
     <div data-md-component="announce">
       
@@ -79,7 +90,7 @@
 
 <header class="md-header md-header--shadow" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="/." title="Surface Morphometrics GUI" class="md-header__button md-logo" aria-label="Surface Morphometrics GUI" data-md-component="logo">
+    <a href="../.." title="Surface Morphometrics GUI" class="md-header__button md-logo" aria-label="Surface Morphometrics GUI" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -99,7 +110,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              
+              Surface Mesh Generation
             
           </span>
         </div>
@@ -177,7 +188,7 @@
 
 <nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="/." title="Surface Morphometrics GUI" class="md-nav__button md-logo" aria-label="Surface Morphometrics GUI" data-md-component="logo">
+    <a href="../.." title="Surface Morphometrics GUI" class="md-nav__button md-logo" aria-label="Surface Morphometrics GUI" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -195,7 +206,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/." class="md-nav__link">
+      <a href="../.." class="md-nav__link">
         
   
   
@@ -269,7 +280,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/getting-started/installation/" class="md-nav__link">
+      <a href="../../getting-started/installation/" class="md-nav__link">
         
   
   
@@ -297,7 +308,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/getting-started/quickstart/" class="md-nav__link">
+      <a href="../../getting-started/quickstart/" class="md-nav__link">
         
   
   
@@ -329,18 +340,20 @@
       
   
   
+    
   
   
+  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
         
           
           <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
@@ -361,7 +374,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_3">
             <span class="md-nav__icon md-icon"></span>
             
@@ -379,7 +392,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/guide/experiment-setup/" class="md-nav__link">
+      <a href="../experiment-setup/" class="md-nav__link">
         
   
   
@@ -404,10 +417,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="/guide/mesh-generation/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Surface Mesh Generation
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -423,6 +463,59 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#running-mesh-generation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running mesh generation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rerunning-mesh-generation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rerunning mesh generation
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -435,7 +528,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/guide/curvature-analysis/" class="md-nav__link">
+      <a href="../curvature-analysis/" class="md-nav__link">
         
   
   
@@ -463,7 +556,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/guide/distance-orientation/" class="md-nav__link">
+      <a href="../distance-orientation/" class="md-nav__link">
         
   
   
@@ -491,7 +584,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/guide/visualization/" class="md-nav__link">
+      <a href="../visualization/" class="md-nav__link">
         
   
   
@@ -519,7 +612,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/guide/resuming-experiments/" class="md-nav__link">
+      <a href="../resuming-experiments/" class="md-nav__link">
         
   
   
@@ -554,7 +647,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/about/" class="md-nav__link">
+      <a href="../../about/" class="md-nav__link">
         
   
   
@@ -591,6 +684,49 @@
   
   
   
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#running-mesh-generation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running mesh generation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rerunning-mesh-generation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rerunning mesh generation
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
   
 </nav>
                   </div>
@@ -603,8 +739,46 @@
               
               <article class="md-content__inner md-typeset">
                 
-  <h1>404 - Not found</h1>
+                  
 
+
+
+<h1 id="surface-mesh-generation">Surface Mesh Generation<a class="headerlink" href="#surface-mesh-generation" title="Permanent link">&para;</a></h1>
+<p>This step converts your voxel segmentations into surface meshes using screened Poisson reconstruction.</p>
+<!-- IMAGE NEEDED: Screenshot of the Mesh Generation tab showing the settings panel (reconstruction depth, surface quality parameters) on the right, and the Run button with the progress bar below it -->
+
+<p><img alt="Mesh Generation" src="../../images/mesh_tab.png" /></p>
+<h2 id="running-mesh-generation">Running mesh generation<a class="headerlink" href="#running-mesh-generation" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Switch to the <strong>Mesh Generation</strong> tab.</li>
+<li>Review the mesh generation settings on the right-hand side. These control parameters like reconstruction depth and surface quality.</li>
+<li>Click <strong>Run</strong> to start generating meshes for all segmentations in your data directory.</li>
+</ol>
+<p>Progress is displayed in the progress bar as each segmentation is processed.</p>
+<h2 id="output">Output<a class="headerlink" href="#output" title="Permanent link">&para;</a></h2>
+<p>Generated meshes are saved in your experiment's results directory as <code>.ply</code> and <code>.surface.vtp</code> files. These VTP files are used in the next step (curvature analysis).</p>
+<h2 id="rerunning-mesh-generation">Rerunning mesh generation<a class="headerlink" href="#rerunning-mesh-generation" title="Permanent link">&para;</a></h2>
+<p>If you run mesh generation on an experiment that already has results, you'll be prompted to choose:</p>
+<ul>
+<li><strong>Overwrite</strong> — Deletes existing mesh files and runs fresh.</li>
+<li><strong>Archive</strong> — Moves existing files to a timestamped archive folder (e.g., <code>results/archive_20241208_120000/</code>) with a snapshot of the current config, then runs fresh.</li>
+<li><strong>Cancel</strong> — Aborts the run.</li>
+</ul>
+<p>This ensures you never accidentally lose previous results when re-trying with different parameters.</p>
+<p><img alt="Rerunning Mesh Generation" src="../../images/rerun.png" /></p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
               </article>
             </div>
           
@@ -641,10 +815,10 @@
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "/", "features": [], "search": "/assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": [], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="/assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
       
     
   </body>
