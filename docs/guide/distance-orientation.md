@@ -4,6 +4,8 @@ This step measures distances and relative orientations between membrane surfaces
 
 <!-- IMAGE NEEDED: Screenshot of the Distance & Orientation tab showing the intra-membrane and inter-membrane measurement configuration sections, the Concurrent Jobs spinner, and the Run button -->
 
+![Distance & Orientation](../images/measurement_tab.png)
+
 ## Setting up measurements
 
 ### Intra-membrane measurements

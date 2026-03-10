@@ -4,6 +4,8 @@ This step runs PyCurv to compute curvature measurements (Gaussian, mean, and pri
 
 <!-- IMAGE NEEDED: Screenshot of the PyCurv tab showing the curvature settings (Radius Hit, Min Component, Exclude Borders, Concurrent Jobs), the scrollable VTP file list with checkboxes, the Select All checkbox, the Refresh button, and the Run button -->
 
+![PyCurv](../images/curvature_measurement.png)
+
 ## Settings
 
 The PyCurv tab provides the following curvature measurement parameters:
@@ -56,7 +58,7 @@ When you click **Run**, all selected VTP files are submitted to a thread pool. T
 
 ## Output
 
-Curvature values are written as properties on the VTP mesh files. You can visualize these in the [Visualization](visualization.md) panel by selecting curvature properties from the dropdown menu.
+You can visualize the results in the [Visualization](visualization.md) panel by selecting curvature properties from the dropdown menu.
 
 ## Rerunning
 
