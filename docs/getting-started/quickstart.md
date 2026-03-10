@@ -21,6 +21,10 @@ In the experiment manager panel (right side):
 2. Enter an **Experiment Name**
 3. Select your **Data Directory** — the folder with your segmentation files
 4. Choose a **Config Template** — a YAML file from the `surface_morphometrics` directory
+
+    !!! warning "Config template location matters"
+        The GUI detects analysis scripts based on where your config template is located. **Keep your config template inside the `surface_morphometrics` directory** (the repository containing the pipeline scripts). If you move it elsewhere, the GUI will not find the scripts.
+
 5. Set the number of **Cores** for parallel processing
 6. Review the **Segmentation Values** populated from the template
 7. Click **New Experiment**
