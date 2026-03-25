@@ -182,17 +182,32 @@ class MeshGenerationWidget(QWidget):
 
     def _run_job(self):
         """Run surface mesh generation"""
-        
-        # Strict script location check
-        # Force reload config from disk to catch manual edits
-        self.experiment_manager._load_existing_experiment_config()
-        config = getattr(self.experiment_manager, 'current_config', {})
-        script_location = config.get('script_location')
-        
+
+        # Update config FIRST, before any dialogs, to capture current widget
+        # values.  Qt dialogs (like the archive prompt below) run a nested event
+        # loop which can process pending config_loaded signals and reset widget
+        # values to whatever is on disk.  Writing the config here ensures the
+        # user's GUI values are persisted before that can happen.
+        try:
+            config_path, meshes_dir = self._update_config()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to update config: {e}")
+            return
+
+        # Read script_location from the now-updated config file on disk
+        script_location = None
+        try:
+            yaml_reader = YAML(typ='safe')
+            with open(config_path, 'r') as f:
+                disk_config = yaml_reader.load(f)
+            script_location = disk_config.get('script_location')
+        except Exception as e:
+            print(f"[MeshTab] Error reading script_location from config: {e}")
+
         script_path = None
         if script_location:
              script_path = Path(script_location) / 'segmentation_to_meshes.py'
-        
+
         if not script_path or not script_path.exists():
             error_msg = (
                 "Script 'segmentation_to_meshes.py' not found.\n\n"
@@ -207,24 +222,8 @@ class MeshGenerationWidget(QWidget):
             return
 
         # Check for existing results and prompt specifically for Mesh Generation (Archives ALL)
-        work_dir = Path(self.experiment_manager.work_dir.value)
-        results_dir = work_dir / self.experiment_manager.experiment_name.currentText() / 'results'
-        
-        # Resolve config path for snapshot (inside experiment directory)
-        config_path_to_pass = None
-        potential_config_path = work_dir / self.experiment_manager.experiment_name.currentText() / f"{self.experiment_manager.experiment_name.currentText()}_config.yml"
-        if potential_config_path.exists():
-            config_path_to_pass = potential_config_path
-            
-        if not check_and_archive_outputs(self, results_dir, config_path=config_path_to_pass, targets='all'):
+        if not check_and_archive_outputs(self, meshes_dir, config_path=config_path, targets='all'):
             self.status.update_status('Cancelled')
-            return
-
-        # Update config in main thread to capture current state
-        try:
-            config_path, meshes_dir = self._update_config()
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to update config: {e}")
             return
 
         self.submit_btn.enabled = False

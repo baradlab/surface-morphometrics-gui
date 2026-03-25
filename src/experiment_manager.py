@@ -1,13 +1,14 @@
 from pathlib import Path
 from qtpy.QtWidgets import (
-    QWidget, QVBoxLayout, QPushButton, QLabel, QHBoxLayout, QComboBox, QMessageBox, QSpinBox, QDialog, 
-    QCompleter, QSizePolicy, QScrollArea
+    QWidget, QVBoxLayout, QPushButton, QLabel, QHBoxLayout, QComboBox, QMessageBox, QSpinBox, QDialog,
+    QCompleter, QSizePolicy, QScrollArea, QFileDialog, QInputDialog
 )
 from qtpy.QtCore import Qt, QTimer, QStringListModel, Signal  # type: ignore
 from magicgui import widgets
 from ruamel.yaml import YAML
 import matplotlib.pyplot as plt
 import os
+import shutil
 import napari
 
 class SegmentationEntry(widgets.Container):
@@ -298,10 +299,28 @@ class ExperimentManager(QWidget):
             }
         """)
 
-        # Center the submit button
+        # Import CLI Project Button
+        self.import_button = QPushButton('Import CLI Project')
+        self.import_button.clicked.connect(self._import_cli_project)
+        self.import_button.setFixedWidth(200)
+        self.import_button.setStyleSheet("""
+            QPushButton {
+                padding: 8px;
+                background-color: #7f7f7f;
+                color: black;
+                border: none;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #A0A0A0;
+            }
+        """)
+
+        # Center the buttons
         button_layout = QHBoxLayout()
         button_layout.addStretch()
         button_layout.addWidget(self.submit_button)
+        button_layout.addWidget(self.import_button)
         button_layout.addStretch()
         self.layout.addLayout(button_layout)
 
@@ -431,17 +450,21 @@ class ExperimentManager(QWidget):
             # Update current config
             self.current_config = existing_config
 
-            # Update UI with loaded config values
-            if 'data_dir' in existing_config:
-
-                self.data_dir.value = existing_config['data_dir']
-            # Load the original config template if available
-            if 'config_template' in existing_config:
-
-                self.config_template.value = existing_config['config_template']
-            else:
-
-                self.config_template.value = str(config_path)
+            # Block config_template.changed while restoring UI so that
+            # _handle_config_template_selection does not re-load the
+            # original template file and overwrite current_config / data_dir.
+            self.config_template.changed.disconnect(self._handle_config_template_selection)
+            try:
+                # Update UI with loaded config values
+                if 'data_dir' in existing_config:
+                    self.data_dir.value = existing_config['data_dir']
+                # Load the original config template if available
+                if 'config_template' in existing_config:
+                    self.config_template.value = existing_config['config_template']
+                else:
+                    self.config_template.value = str(config_path)
+            finally:
+                self.config_template.changed.connect(self._handle_config_template_selection)
             # Set cores if available
             if 'cores' in existing_config:
 
@@ -498,8 +521,9 @@ class ExperimentManager(QWidget):
             if 'segmentation_values' in self.current_config:
                 self.segmentation_container._set_values(self.current_config['segmentation_values'])
             
-            # Update other fields if plausible (optional, but requested by plan)
-            if 'data_dir' in self.current_config:
+            # Only populate data_dir from the template if the user hasn't
+            # already set one — avoids overwriting a real path with an example.
+            if 'data_dir' in self.current_config and not self.data_dir.value:
                 self.data_dir.value = self.current_config['data_dir']
 
     def _update_config_paths(self):
@@ -728,3 +752,161 @@ class ExperimentManager(QWidget):
         self.cores_input.setValue(1)
         self.segmentation_container._set_values({})
         self.submit_button.setText('Start New Experiment')
+
+    def _import_cli_project(self):
+        """Import a CLI output directory into GUI-compatible experiment structure.
+
+        Guided multi-step flow:
+        1. Select CLI output directory (containing .vtp/.csv/.ply files)
+        2. Optionally select a config .yml file (may live elsewhere)
+        3. Enter experiment name
+        4. Confirm destination and copy count
+        5. Copy files and create/augment config
+        6. Refresh UI
+
+        Files are COPIED (not moved) so the original directory is left untouched.
+        """
+        # Step 1: Select CLI output directory
+        cli_dir = QFileDialog.getExistingDirectory(
+            self, "Select CLI Output Directory",
+            "",
+            QFileDialog.ShowDirsOnly
+        )
+        if not cli_dir:
+            return
+        cli_path = Path(cli_dir)
+
+        # Step 2: Validate — must contain result files
+        copy_extensions = {'.vtp', '.ply', '.xyz', '.csv', '.gt', '.log', '.svg', '.png'}
+        files_to_copy = [f for f in cli_path.iterdir() if f.is_file() and f.suffix in copy_extensions]
+
+        if not files_to_copy:
+            QMessageBox.warning(
+                self, "Invalid Directory",
+                "The selected directory does not contain any recognizable CLI output files.\n"
+                "Expected to find .vtp, .csv, .ply, or similar result files."
+            )
+            return
+
+        # Step 3: Ask about config file (separate picker since CLI configs live anywhere)
+        has_config = QMessageBox.question(
+            self, "Config File",
+            "Do you have a config .yml file for this project?\n\n"
+            "(CLI config files can be in a different location than the output.)",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
+
+        config_file = None
+        config_data = None
+        if has_config == QMessageBox.Yes:
+            config_path_str, _ = QFileDialog.getOpenFileName(
+                self, "Select Config File",
+                str(cli_path),
+                "YAML files (*.yml *.yaml)"
+            )
+            if config_path_str:
+                config_file = Path(config_path_str)
+                yaml = YAML()
+                yaml.preserve_quotes = True
+                try:
+                    with open(config_file, 'r') as f:
+                        config_data = yaml.load(f) or {}
+                except Exception as e:
+                    QMessageBox.warning(
+                        self, "Config Read Error",
+                        f"Could not read config file:\n{e}\n\nProceeding without config."
+                    )
+                    config_file = None
+                    config_data = None
+
+        # Step 4: Enter experiment name
+        default_name = cli_path.name
+        exp_name, ok = QInputDialog.getText(
+            self, "Experiment Name",
+            "Enter a name for the imported experiment:",
+            text=default_name
+        )
+        if not ok or not exp_name.strip():
+            return
+        exp_name = exp_name.strip()
+
+        # Step 5: Determine work_dir (use GUI widget value, or fall back to parent of CLI dir)
+        if self.work_dir.value:
+            work_dir = Path(self.work_dir.value)
+        else:
+            work_dir = cli_path.parent
+            self.work_dir.value = str(work_dir)
+
+        exp_dir = work_dir / exp_name
+        results_dir = exp_dir / "results"
+        dest_config_path = exp_dir / f"{exp_name}_config.yml"
+
+        # Step 6: Show confirmation
+        config_source = str(config_file) if config_file else "will be created from scratch"
+        confirm = QMessageBox.question(
+            self, "Confirm Import",
+            f"Will copy {len(files_to_copy)} result file(s) to:\n"
+            f"  {results_dir}\n\n"
+            f"Config source: {config_source}\n"
+            f"Config will be saved at:\n"
+            f"  {dest_config_path}\n\n"
+            f"Original files will NOT be modified.\n\n"
+            f"Continue?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        # Step 7: Create structure and copy files
+        try:
+            results_dir.mkdir(parents=True, exist_ok=True)
+
+            for f in files_to_copy:
+                dest = results_dir / f.name
+                shutil.copy2(str(f), str(dest))
+
+            # Build config: augment existing or create minimal
+            yaml = YAML()
+            yaml.preserve_quotes = True
+
+            if config_data is not None:
+                # Preserve all CLI fields, override GUI-required ones
+                config_data['work_dir'] = str(exp_dir)
+                config_data['exp_name'] = exp_name
+                config_data['cores'] = self.cores_input.value()
+            else:
+                config_data = {
+                    'work_dir': str(exp_dir),
+                    'exp_name': exp_name,
+                    'cores': self.cores_input.value(),
+                }
+
+            with open(dest_config_path, 'w') as f:
+                yaml.dump(config_data, f)
+
+            # Step 8: Update UI from imported config
+            if 'data_dir' in config_data:
+                self.data_dir.value = config_data['data_dir']
+            if 'segmentation_values' in config_data:
+                self.segmentation_container._set_values(config_data['segmentation_values'])
+
+            # Refresh experiment dropdown and select imported experiment
+            self._update_experiment_names()
+            idx = self.experiment_name.findText(exp_name)
+            if idx >= 0:
+                self.experiment_name.setCurrentIndex(idx)
+
+            QMessageBox.information(
+                self, "Import Successful",
+                f"CLI project imported as experiment '{exp_name}'.\n"
+                f"Files copied to: {results_dir}\n\n"
+                f"Your original files in:\n  {cli_path}\nare unchanged."
+            )
+
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Import Error",
+                f"Failed to import CLI project:\n{str(e)}"
+            )
