@@ -10,7 +10,7 @@ from pathlib import Path
 from magicgui import widgets
 from qtpy.QtCore import QTimer
 from ruamel.yaml import YAML
-from qtpy.QtWidgets import QMessageBox
+from qtpy.QtWidgets import QMessageBox, QScrollArea, QVBoxLayout, QWidget
 from utils.archive_utils import check_and_archive_outputs
 
 from widgets.job_status import JobStatusWidget
@@ -107,18 +107,36 @@ class InterDictEditor(widgets.Container):
             self._add_entry(key, value_list)
 
 
-class DistanceOrientationWidget(widgets.Container):
+class DistanceOrientationWidget(QWidget):
     """Widget for distance and orientation measurement settings"""
 
     def __init__(self, experiment_manager):
-        super().__init__(layout='vertical', labels=True)
+        super().__init__()
         self.experiment_manager = experiment_manager
         self.is_running = False
+
+        self.container = widgets.Container(layout='vertical', labels=True)
+        self.container.native.layout().setContentsMargins(3, 3, 3, 3)
+        self.container.native.layout().setSpacing(3)
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidget(self.container.native)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QScrollArea.NoFrame)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(scroll_area)
+
+        self.native = self
 
         # Header container
         header = widgets.Container(widgets=[
             widgets.Label(value='<b>Distance and Orientation Measurements</b>')
         ], layout='vertical')
+        header.native.layout().setContentsMargins(0, 0, 0, 0)
+        header.native.layout().setSpacing(0)
 
         # Settings container
         settings = widgets.Container(layout='vertical', labels=True)
@@ -157,12 +175,16 @@ class DistanceOrientationWidget(widgets.Container):
         self.submit_btn = widgets.PushButton(text='Run Distance/Orientation Analysis')
         self.submit_btn.clicked.connect(self._run_job)
 
-        self.extend([
+        self.container.extend([
             header,
             settings,
             self.submit_btn,
             self.status
         ])
+
+        # Absorb leftover vertical space at the bottom so the content
+        # hugs the top instead of being spread out across the viewport.
+        self.container.native.layout().addStretch(1)
 
         # Connect signal for loading experiment configurations
         if hasattr(self.experiment_manager, 'config_loaded'):
