@@ -49,6 +49,7 @@ class MeshGenerationWidget(QWidget):
         self.angstroms = widgets.CheckBox(value=False, label='Angstrom Scaling')
         self.ultrafine = widgets.CheckBox(value=True, label='Ultrafine Surface (High Quality, Slow)')
         self.target_area = widgets.FloatSpinBox(value=1.0, min=0.1, max=100.0, step=0.1, label='Target Triangle Area')
+        self.isotropic_remesh = widgets.CheckBox(value=False, label='Isotropic Remesh')
         self.simplify = widgets.CheckBox(value=False, label='Simplify Surface')
         self.max_triangles = widgets.SpinBox(value=300000, min=1000, max=1000000, label='Max Triangles')
         self.extrapolation_distance = widgets.FloatSpinBox(value=1.5, min=0.1, max=10.0, step=0.1, label='Extrapolation Distance')
@@ -62,6 +63,7 @@ class MeshGenerationWidget(QWidget):
             self.angstroms,
             self.ultrafine,
             self.target_area,
+            self.isotropic_remesh,
             self.simplify,
             self.max_triangles,
             self.extrapolation_distance,
@@ -110,6 +112,7 @@ class MeshGenerationWidget(QWidget):
             self.angstroms.value = mesh_cfg.get('angstroms', False)
             self.ultrafine.value = mesh_cfg.get('ultrafine', True)
             self.target_area.value = mesh_cfg.get('target_area', 1.0)
+            self.isotropic_remesh.value = mesh_cfg.get('isotropic_remesh', False)
             self.simplify.value = mesh_cfg.get('simplify', False)
             self.max_triangles.value = mesh_cfg.get('max_triangles', 300000)
             self.extrapolation_distance.value = mesh_cfg.get('extrapolation_distance', 1.5)
@@ -162,6 +165,7 @@ class MeshGenerationWidget(QWidget):
                 'angstroms': self.angstroms.value,
                 'ultrafine': self.ultrafine.value,
                 'target_area': self.target_area.value,
+                'isotropic_remesh': self.isotropic_remesh.value,
                 'simplify': self.simplify.value,
                 'max_triangles': self.max_triangles.value,
                 'extrapolation_distance': self.extrapolation_distance.value,

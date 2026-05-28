@@ -30,6 +30,7 @@ ENV/
 # IDE specific files
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 .project
@@ -52,6 +53,7 @@ Thumbs.db
 *.stl
 *.ply
 *.vtk
+results/
 temp/
 output/
 
