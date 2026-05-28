@@ -13,9 +13,98 @@ from ruamel.yaml import YAML
 from qtpy.QtWidgets import QMessageBox
 from utils.archive_utils import check_and_archive_outputs
 
-# These are assumed to be in your project structure
-from morphometrics_config import IntraListEditor, InterDictEditor
 from widgets.job_status import JobStatusWidget
+
+
+class IntraListEditor(widgets.Container):
+    """Editor for intra membrane list"""
+    def __init__(self):
+        super().__init__(layout='vertical')
+        self.entries = []
+        self.add_button = widgets.PushButton(text='Add Membrane')
+        self.add_button.clicked.connect(self._add_entry)
+        self.extend([self.add_button])
+
+    def _add_entry(self, label=''):
+        entry = widgets.LineEdit(value=label)
+        remove_button = widgets.PushButton(text='Remove')
+        container = widgets.Container(layout='horizontal')
+        container.extend([entry, remove_button])
+
+        def remove():
+            self.entries.remove((entry, container))
+            self.remove(container)
+
+        remove_button.clicked.connect(remove)
+        self.entries.append((entry, container))
+        self.insert(-1, container)
+
+    def get_values(self):
+        return [entry.value for entry, _ in self.entries if entry.value.strip()]
+
+    def set_values(self, values):
+        while self.entries:
+            _, container = self.entries[0]
+            self.entries.pop(0)
+            self.remove(container)
+        for value in values:
+            self._add_entry(value)
+
+
+class InterDictEditor(widgets.Container):
+    """Editor for inter membrane dictionary"""
+    def __init__(self):
+        super().__init__(layout='vertical')
+        # Keyed by an internal token, not the user-facing membrane name —
+        # multiple new rows would otherwise collide on key='' and silently
+        # overwrite each other.
+        self.entries = {}
+        self._next_token = 0
+        self.add_button = widgets.PushButton(text='Add Membrane Pair')
+        self.add_button.clicked.connect(lambda: self._add_entry())
+        self.extend([self.add_button])
+
+    def _add_entry(self, key='', values=None):
+        if values is None:
+            values = []
+
+        key_edit = widgets.LineEdit(value=key, label='Membrane:')
+        value_editor = IntraListEditor()
+        value_editor.set_values(values)
+
+        remove_button = widgets.PushButton(text='Remove')
+        header = widgets.Container(layout='horizontal')
+        header.extend([key_edit, remove_button])
+
+        container = widgets.Container(layout='vertical')
+        container.extend([header, value_editor])
+
+        token = self._next_token
+        self._next_token += 1
+
+        def remove():
+            if token in self.entries:
+                self.entries.pop(token)
+                self.remove(container)
+
+        remove_button.clicked.connect(remove)
+
+        self.entries[token] = (key_edit, value_editor, container)
+        self.insert(-1, container)
+
+    def get_values(self):
+        return {
+            entry[0].value: entry[1].get_values()
+            for entry in self.entries.values()
+            if entry[0].value.strip()
+        }
+
+    def set_values(self, values):
+        for entry in list(self.entries.values()):
+            self.remove(entry[2])
+        self.entries.clear()
+        for key, value_list in values.items():
+            self._add_entry(key, value_list)
 
 
 class DistanceOrientationWidget(widgets.Container):
@@ -46,7 +135,7 @@ class DistanceOrientationWidget(widgets.Container):
         # Custom editors for intra/inter measurements
         self.intra_editor = IntraListEditor()
         self.inter_editor = InterDictEditor()
-        
+
         self.n_jobs_input = widgets.SpinBox(value=1, min=1, max=128, label='Concurrent Jobs (Parallel Files)')
         self.n_jobs_input.tooltip = "Number of files to process simultaneously."
 
