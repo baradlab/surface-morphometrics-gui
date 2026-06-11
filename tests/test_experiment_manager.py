@@ -202,7 +202,10 @@ class TestCliImportPlanner:
         scan = ScanResult([tmp_path / "a.vtp"], [], False)
         plan, err = build_plan(inp, scan)
         assert err is None
-        assert plan.config_to_write["data_dir"] == str(replacement)
+        # The override is written under the packaged-CLI key, and the legacy
+        # alias is dropped so the CLI doesn't emit a deprecation warning.
+        assert plan.config_to_write["seg_dir"] == str(replacement)
+        assert "data_dir" not in plan.config_to_write
 
     def test_existing_config_needs_confirm(self, tmp_path):
         from utils.cli_import import build_plan, PlanError, ScanResult

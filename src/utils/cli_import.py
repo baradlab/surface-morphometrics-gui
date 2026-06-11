@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 CONFIG_REQUIRED_ANY = (
-    'data_dir', 'segmentation_values', 'surface_generation',
+    'seg_dir', 'data_dir', 'segmentation_values', 'surface_generation',
     'curvature_measurements', 'distance_and_orientation_measurements',
 )
 OUTPUT_EXTENSIONS = {'.vtp', '.ply', '.xyz', '.csv', '.gt', '.log', '.svg', '.png'}
@@ -191,22 +191,25 @@ def build_plan(
             f"A config already exists at:\n  {dest_config_path}\n"
             "Enable 'Overwrite existing config' to replace it.")
 
-    # Resolve data_dir from the config. Relative paths are interpreted
-    # against the source directory.
+    # Resolve the segmentation dir from the config. Relative paths are
+    # interpreted against the source directory. Accept the legacy ``data_dir``
+    # alias but always write the packaged-CLI key ``seg_dir``.
     config_data = dict(inputs.config_data)
     if inputs.data_dir_override is not None:
-        config_data['data_dir'] = str(inputs.data_dir_override)
+        config_data['seg_dir'] = str(inputs.data_dir_override)
+        config_data.pop('data_dir', None)
     else:
-        raw = config_data.get('data_dir')
+        raw = config_data.get('seg_dir') or config_data.get('data_dir')
         if raw:
             candidate = Path(str(raw))
             if not candidate.is_absolute():
                 candidate = (source_dir / candidate).resolve()
             if not candidate.is_dir():
                 return None, PlanError(PlanError.DATA_DIR_MISSING,
-                    f"The config's data_dir does not exist:\n  {raw}\n"
+                    f"The config's seg_dir does not exist:\n  {raw}\n"
                     "Pick a replacement directory.")
-            config_data['data_dir'] = str(candidate)
+            config_data['seg_dir'] = str(candidate)
+            config_data.pop('data_dir', None)
 
     # Plan moves: flat files → results/<name>. Skip names that already
     # exist in results/ — we never overwrite an existing result file.

@@ -19,22 +19,23 @@ class TestPyCurvWidget:
         assert w.radius_hit_input.value == 9
         assert w.min_component_input.value == 30
 
-    def test_find_script_with_config(self, qapp, mock_experiment_manager, tmp_path):
-        w = self._make_widget(qapp, mock_experiment_manager)
-        # Create a script in script_location
-        script_dir = tmp_path / "scripts"
-        script_dir.mkdir()
-        (script_dir / "run_pycurv.py").write_text("# script")
-        mock_experiment_manager.current_config = {"script_location": str(script_dir)}
-        result = w._find_pycurv_script(tmp_path)
-        assert result is not None
-        assert result.name == "run_pycurv.py"
+    def test_cli_runner_prefers_console_script(self, monkeypatch):
+        import utils.script_resolver as sr
+        monkeypatch.setattr(sr.shutil, "which", lambda name: "/usr/bin/morphometrics")
+        assert sr.resolve_cli_runner() == ["/usr/bin/morphometrics"]
 
-    def test_find_script_not_found(self, qapp, mock_experiment_manager, tmp_path):
-        w = self._make_widget(qapp, mock_experiment_manager)
-        mock_experiment_manager.current_config = {}
-        result = w._find_pycurv_script(tmp_path)
-        assert result is None
+    def test_cli_runner_falls_back_to_module(self, monkeypatch):
+        import utils.script_resolver as sr
+        monkeypatch.setattr(sr.shutil, "which", lambda name: None)
+        monkeypatch.setattr(sr.importlib.util, "find_spec", lambda name: object())
+        runner = sr.resolve_cli_runner()
+        assert runner[1:] == ["-m", "surface_morphometrics.cli"]
+
+    def test_cli_runner_none_when_not_installed(self, monkeypatch):
+        import utils.script_resolver as sr
+        monkeypatch.setattr(sr.shutil, "which", lambda name: None)
+        monkeypatch.setattr(sr.importlib.util, "find_spec", lambda name: None)
+        assert sr.resolve_cli_runner() is None
 
     def test_populate_vtp_list_no_config(self, qapp, mock_experiment_manager):
         w = self._make_widget(qapp, mock_experiment_manager)

@@ -1,7 +1,6 @@
 import concurrent.futures
 import copy
 import os
-import shutil
 import subprocess
 import sys
 import threading
@@ -12,6 +11,7 @@ from qtpy.QtCore import QTimer
 from ruamel.yaml import YAML
 from qtpy.QtWidgets import QMessageBox, QScrollArea, QVBoxLayout, QWidget
 from utils.archive_utils import check_and_archive_outputs
+from utils.script_resolver import resolve_cli_runner, CLI_MISSING_MESSAGE, DISTANCES_ORIENTATIONS, get_seg_dir
 
 from widgets.job_status import JobStatusWidget
 
@@ -279,31 +279,11 @@ class DistanceOrientationWidget(QWidget):
             QMessageBox.critical(self.native, "Error", f"Failed to update config: {e}")
             return
 
-        # Manually read config to find script_location without triggering global refresh
-        script_location = None
-        try:
-            yaml = YAML()
-            with open(config_path, 'r') as f:
-                loaded_config = yaml.load(f) or {}
-            script_location = loaded_config.get('script_location')
-        except Exception as e:
-            print(f"[DistanceWidget] Error reading config for script_location: {e}")
-        
-        script_path = None
-        if script_location:
-             script_path = Path(script_location) / 'measure_distances_orientations.py'
-        
-        if not script_path or not script_path.exists():
-            error_msg = (
-                "Script 'measure_distances_orientations.py' not found.\n\n"
-                "Please make sure to place the config file you are using as a template "
-                "in the Surface Morphometrics directory.\n\n"
-                "If it is already placed there, please check the 'script_location' path "
-                "in the experiment-specific config file.\n\n"
-                f"Checked location: {script_path if script_path else 'Not defined'}"
-            )
-            QMessageBox.critical(self.native, "Script Not Found", error_msg)
-            print(f"[Error] {error_msg}")
+        # Resolve the morphometrics CLI (installed package), not a loose script.
+        runner = resolve_cli_runner()
+        if runner is None:
+            QMessageBox.critical(self.native, "morphometrics CLI not found", CLI_MISSING_MESSAGE)
+            print(f"[Error] {CLI_MISSING_MESSAGE}")
             return
 
         # Archive Check (Targets 'measurements' as this is the primary output)
@@ -322,7 +302,7 @@ class DistanceOrientationWidget(QWidget):
 
         # Prepare job data
         job_data = {
-            'script_path': script_path,
+            'runner': runner,
             'config_path': config_path
         }
 
@@ -337,22 +317,17 @@ class DistanceOrientationWidget(QWidget):
         """The core worker function that runs the analysis."""
         try:
             # Unpack data
-            script_path = job_data['script_path']
+            runner = job_data['runner']
             config_path = job_data['config_path']
-            
+
             # Read config again in thread to get paths (safe, reading file)
             yaml = YAML()
             with open(config_path, 'r') as f:
                 exp_config = yaml.load(f)
-                
-            # Note: _update_config set 'work_dir' to the results directory in the saved file.
-            work_dir = Path(exp_config.get('work_dir')).resolve() 
-            data_dir = Path(exp_config.get('data_dir')).resolve()
 
-            # Using passed script_path
-            if not script_path.exists():
-                self.status.update_status('Error: measure_distances_orientations.py not found')
-                return
+            # Note: _update_config set 'work_dir' to the results directory in the saved file.
+            work_dir = Path(exp_config.get('work_dir')).resolve()
+            data_dir = Path(get_seg_dir(exp_config)).resolve()
 
             mrc_files = [f for f in data_dir.glob('*.mrc') if not f.name.startswith('._')]
             if not mrc_files:
@@ -385,29 +360,20 @@ class DistanceOrientationWidget(QWidget):
             
             def process_mrc_file(mrc_file):
                 """
-                Processes a single file using a temporary symlink to trick
-                the script into generating the correct filenames.
+                Processes a single file. The distance script only uses the
+                mrc filename to derive the basename of the existing pycurv
+                graph files (e.g. "TE1.mrc" -> "TE1_OMM.AVV_rh9.gt") — it
+                never opens the mrc — so we pass the bare name directly.
+                Prefixing it (as the mesh tab does) would point the script at
+                graph files that don't exist; it would then skip every
+                measurement and still exit 0, a silent no-op.
                 """
 
-                exp_name = work_dir.parent.name
-                if work_dir.name != 'results':
-                     # Fallback if structure is different
-                     exp_name = work_dir.name
-                
-                link_name = f"{exp_name}{mrc_file.name}"
-                link_path = data_dir / link_name
-                
-                # Pass the ORIGINAL CONFIG path
-                cmd = [sys.executable, "-u", str(script_path), str(config_path), link_name]
-                print(f"--- Running for: {mrc_file.name} (using link: {link_name}) ---")
+                cmd = runner + [DISTANCES_ORIENTATIONS, str(config_path), mrc_file.name]
+                print(f"--- Running for: {mrc_file.name} ---")
                 print(f"Executing: {' '.join(cmd)}")
-                
+
                 try:
-                    # Create the temporary symlink
-                    if os.path.exists(link_path):
-                        os.remove(link_path) # Remove old link if it exists
-                    os.symlink(mrc_file, link_path)
-                    
                     result = subprocess.run(
                         cmd,
                         cwd=data_dir,
@@ -417,16 +383,21 @@ class DistanceOrientationWidget(QWidget):
                     )
                     if result.stdout: print(result.stdout)
                     if result.stderr: print(f"STDERR for {mrc_file.name}:\n{result.stderr}")
-                    
+
+                    # The script exits 0 even when it finds no graph files, so
+                    # treat "No file found" in its output as a failure rather
+                    # than reporting a misleading success.
+                    if "No file found" in (result.stdout or ""):
+                        print(f"[ERROR] No matching pycurv graph files for {mrc_file.name}. "
+                              "Run the PyCurv step first.")
+                        return {'file_name': mrc_file.name, 'return_code': 1}
+
                     print(f"--- Finished Successfully: {mrc_file.name} ---")
                     return {'file_name': mrc_file.name, 'return_code': 0}
                 except subprocess.CalledProcessError as e:
                     error_details = f"STDOUT:\n{e.stdout}\nSTDERR:\n{e.stderr}"
                     print(f"[ERROR] Subprocess for {mrc_file.name} failed.\n{error_details}")
                     return {'file_name': mrc_file.name, 'return_code': e.returncode}
-                finally:
-                    if os.path.islink(link_path):
-                        os.remove(link_path)
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=n_jobs) as executor:
                 future_to_file = {executor.submit(process_mrc_file, f): f for f in mrc_files}

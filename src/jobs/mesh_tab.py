@@ -10,6 +10,7 @@ from qtpy.QtCore import QTimer, Signal, QObject
 from qtpy.QtWidgets import QWidget, QMessageBox, QScrollArea, QVBoxLayout
 import threading
 from utils.archive_utils import check_and_archive_outputs
+from utils.script_resolver import resolve_cli_runner, CLI_MISSING_MESSAGE, MAKE_MESHES
 
 class MeshGenerationWidget(QWidget):
     """Widget for surface mesh generation settings"""
@@ -114,7 +115,7 @@ class MeshGenerationWidget(QWidget):
             self.target_area.value = mesh_cfg.get('target_area', 1.0)
             self.isotropic_remesh.value = mesh_cfg.get('isotropic_remesh', False)
             self.simplify.value = mesh_cfg.get('simplify', False)
-            self.max_triangles.value = mesh_cfg.get('max_triangles', 300000)
+            self.max_triangles.value = mesh_cfg.get('simplify_max_triangles', mesh_cfg.get('max_triangles', 300000))
             self.extrapolation_distance.value = mesh_cfg.get('extrapolation_distance', 1.5)
             self.octree_depth.value = mesh_cfg.get('octree_depth', 7)
             self.point_weight.value = mesh_cfg.get('point_weight', 0.7)
@@ -167,7 +168,7 @@ class MeshGenerationWidget(QWidget):
                 'target_area': self.target_area.value,
                 'isotropic_remesh': self.isotropic_remesh.value,
                 'simplify': self.simplify.value,
-                'max_triangles': self.max_triangles.value,
+                'simplify_max_triangles': self.max_triangles.value,
                 'extrapolation_distance': self.extrapolation_distance.value,
                 'octree_depth': self.octree_depth.value,
                 'point_weight': self.point_weight.value,
@@ -198,31 +199,11 @@ class MeshGenerationWidget(QWidget):
             QMessageBox.critical(self, "Error", f"Failed to update config: {e}")
             return
 
-        # Read script_location from the now-updated config file on disk
-        script_location = None
-        try:
-            yaml_reader = YAML(typ='safe')
-            with open(config_path, 'r') as f:
-                disk_config = yaml_reader.load(f)
-            script_location = disk_config.get('script_location')
-        except Exception as e:
-            print(f"[MeshTab] Error reading script_location from config: {e}")
-
-        script_path = None
-        if script_location:
-             script_path = Path(script_location) / 'segmentation_to_meshes.py'
-
-        if not script_path or not script_path.exists():
-            error_msg = (
-                "Script 'segmentation_to_meshes.py' not found.\n\n"
-                "Please make sure to place the config file you are using as a template "
-                "in the Surface Morphometrics directory.\n\n"
-                "If it is already placed there, please check the 'script_location' path "
-                "in the experiment-specific config file.\n\n"
-                f"Checked location: {script_path if script_path else 'Not defined'}"
-            )
-            QMessageBox.critical(self, "Script Not Found", error_msg)
-            print(f"[Error] {error_msg}")
+        # Resolve the morphometrics CLI (installed package), not a loose script.
+        runner = resolve_cli_runner()
+        if runner is None:
+            QMessageBox.critical(self, "morphometrics CLI not found", CLI_MISSING_MESSAGE)
+            print(f"[Error] {CLI_MISSING_MESSAGE}")
             return
 
         # Check for existing results and prompt specifically for Mesh Generation (Archives ALL)
@@ -230,20 +211,22 @@ class MeshGenerationWidget(QWidget):
             self.status.update_status('Cancelled')
             return
 
+        # Snapshot widget-derived state on the GUI thread; the worker must not
+        # read QWidget values directly (they can change mid-run if the user
+        # switches experiment or work_dir).
+        exp_dir = Path(self.experiment_manager.work_dir.value) / self.experiment_manager.experiment_name.currentText()
+
         self.submit_btn.enabled = False
         self.status.update_status('Running')
-        # Pass the validated script_path and config info to the worker
-        threading.Thread(target=self._run_job_worker, args=(script_path, config_path, meshes_dir), daemon=True).start()
+        threading.Thread(
+            target=self._run_job_worker,
+            args=(runner, config_path, meshes_dir, exp_dir),
+            daemon=True,
+        ).start()
 
-    def _run_job_worker(self, script_path, config_path, meshes_dir):
+    def _run_job_worker(self, runner, config_path, meshes_dir, exp_dir):
         try:
-            # config_path and meshes_dir are passed from main thread
-            work_dir = Path(self.experiment_manager.work_dir.value)
-            
-            # Using the passed script_path which is already validated
-            pass # just a placeholder to keep indentation valid if needed, but we can just use script_path directly safely now
-            
-            cmd = [sys.executable, str(script_path), str(config_path)]
+            cmd = runner + [MAKE_MESHES, str(config_path)]
             print(f"Running: {' '.join(map(str, cmd))}")
             my_env = os.environ.copy()
             my_env["PYTHONUNBUFFERED"] = "1"
@@ -256,7 +239,7 @@ class MeshGenerationWidget(QWidget):
                 universal_newlines=True,
                 env=my_env,
                 # Run inside the experiment directory to avoid picking up sibling experiments
-                cwd=str(Path(self.experiment_manager.work_dir.value) / self.experiment_manager.experiment_name.currentText())
+                cwd=str(exp_dir),
             )
             progress = 0
             step_count = 0
@@ -278,26 +261,46 @@ class MeshGenerationWidget(QWidget):
                             self.status.update_progress(progress)
             return_code = process.wait()
             if return_code == 0:
-                exp_dir = Path(self.experiment_manager.work_dir.value) / self.experiment_manager.experiment_name.currentText()
-                work_dir = Path(self.experiment_manager.work_dir.value)
-                
-                # Check both work directory and experiment directory for mesh files
+                # segmentation_to_meshes.py treats work_dir as a path prefix, so
+                # outputs land in exp_dir.parent with names like
+                # "<exp_name><seg>_<label>.ply" — not inside exp_dir itself.
+                # Sweep both locations, but in the parent restrict to files
+                # prefixed with this experiment's name so we don't steal output
+                # from sibling experiments.
+                exp_name = exp_dir.name
                 moved_files = []
-                search_dirs = [exp_dir, work_dir]
-                
-                for pattern in ['*.ply', '*.surface.vtp', '*.xyz']:
-                    for search_dir in search_dirs:
-                        if search_dir.exists():
-                            for f in search_dir.glob(pattern):
-                                if f.is_file():
-                                    # Sanitize filename: remove any accidental leading digits before letters
-                                    sanitized_name = re.sub(r'^[0-9]+(?=[A-Za-z])', '', f.name)
-                                    dest_path = meshes_dir / sanitized_name
-                                    try:
-                                        f.rename(dest_path)
-                                        moved_files.append(dest_path)
-                                    except Exception as e:
-                                        print(f"Error moving {f}: {e}")
+                sweep_specs = [
+                    (exp_dir, ['*.ply', '*.surface.vtp', '*.xyz']),
+                    (exp_dir.parent, [f'{exp_name}*.ply', f'{exp_name}*.surface.vtp', f'{exp_name}*.xyz']),
+                ]
+                for sweep_dir, patterns in sweep_specs:
+                    if not sweep_dir.exists():
+                        continue
+                    for pattern in patterns:
+                        for f in sweep_dir.glob(pattern):
+                            if not f.is_file():
+                                continue
+                            # Skip anything already inside meshes_dir
+                            try:
+                                if f.resolve().is_relative_to(meshes_dir.resolve()):
+                                    continue
+                            except AttributeError:
+                                # Python <3.9 fallback
+                                if str(f.resolve()).startswith(str(meshes_dir.resolve())):
+                                    continue
+                            # Strip the experiment-name prefix when present so
+                            # downstream tools see clean "<seg>_<label>" names.
+                            name = f.name
+                            if name.startswith(exp_name):
+                                name = name[len(exp_name):]
+                            # Also strip any stray leading digits before letters
+                            sanitized_name = re.sub(r'^[0-9]+(?=[A-Za-z])', '', name)
+                            dest_path = meshes_dir / sanitized_name
+                            try:
+                                f.rename(dest_path)
+                                moved_files.append(dest_path)
+                            except Exception as e:
+                                print(f"Error moving {f}: {e}")
                 
                 # Check if files exist in results directory (whether moved or already there)
                 mesh_files = list(meshes_dir.glob('*.ply')) + list(meshes_dir.glob('*.surface.vtp')) + list(meshes_dir.glob('*.xyz'))

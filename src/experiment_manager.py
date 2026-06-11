@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import os
 import shutil
 import napari
+from utils.script_resolver import get_seg_dir
 
 logger = logging.getLogger(__name__)
 
@@ -460,8 +461,8 @@ class ExperimentManager(QWidget):
             self.config_template.changed.disconnect(self._handle_config_template_selection)
             try:
                 # Update UI with loaded config values
-                if 'data_dir' in existing_config:
-                    self.data_dir.value = existing_config['data_dir']
+                if get_seg_dir(existing_config):
+                    self.data_dir.value = get_seg_dir(existing_config)
                 # Load the original config template if available
                 if 'config_template' in existing_config:
                     self.config_template.value = existing_config['config_template']
@@ -502,6 +503,9 @@ class ExperimentManager(QWidget):
                 with open(file_path, 'r') as f:
                     self.current_config = yaml.load(f)
                 self._load_config(file_path)
+                # Populate the job tabs (distance pairs, pycurv/mesh settings)
+                # from the selected template — not just on load/resume.
+                self.config_loaded.emit()
             except Exception as e:
                 QMessageBox.critical(
                     self,
@@ -525,10 +529,16 @@ class ExperimentManager(QWidget):
             if 'segmentation_values' in self.current_config:
                 self.segmentation_container._set_values(self.current_config['segmentation_values'])
             
-            # Only populate data_dir from the template if the user hasn't
-            # already set one — avoids overwriting a real path with an example.
-            if 'data_dir' in self.current_config and not self.data_dir.value:
-                self.data_dir.value = self.current_config['data_dir']
+            # Only populate the segmentation dir from the template if the user
+            # hasn't already set one — avoids overwriting a real path with an example.
+            if get_seg_dir(self.current_config) and not self.data_dir.value:
+                self.data_dir.value = get_seg_dir(self.current_config)
+
+            # Honor the template's exp_name: pre-fill the experiment name so the
+            # experiment folder and config get named after it. Only when the
+            # user hasn't already typed/selected a name — never clobber input.
+            if self.current_config.get('exp_name') and not self.experiment_name.currentText().strip():
+                self.experiment_name.setCurrentText(self.current_config['exp_name'])
 
     def _update_config_paths(self):
         """Update paths in the config when directories are selected.
@@ -538,7 +548,7 @@ class ExperimentManager(QWidget):
         """
         if self.current_config:
             if self.data_dir.value:
-                self.current_config['data_dir'] = str(self.data_dir.value)
+                self.current_config['seg_dir'] = str(self.data_dir.value)
 
             if self.work_dir.value:
                 self.current_config['work_dir'] = str(self.work_dir.value)
@@ -726,12 +736,13 @@ class ExperimentManager(QWidget):
             config_data, config_template_path = self._load_config_template()
 
             # Update only the UNIVERSAL section
-            config_data['data_dir'] = str(self.data_dir.value)
+            config_data['seg_dir'] = str(self.data_dir.value)  # segmentation MRC directory (CLI key)
+            config_data.pop('data_dir', None)  # drop legacy key so the CLI doesn't warn
             config_data['work_dir'] = str(experiment_dir)
             config_data['exp_name'] = experiment_name  # Add experiment name to config
             config_data['cores'] = self.cores_input.value()  # Add cores to config
             config_data['segmentation_values'] = self.segmentation_container.get_values()  # Add segmentation values to config
-            config_data['script_location'] = str(config_template_path.parent) # Add script location to config
+            config_data['config_template'] = str(config_template_path) # Remember template for resume
 
             # Save the modified config to the new location
             yaml = YAML()
@@ -756,7 +767,7 @@ class ExperimentManager(QWidget):
         """Update UI state from loaded config"""
         if self.current_config:
             self.work_dir.value = self.current_config['work_dir']
-            self.data_dir.value = self.current_config['data_dir']
+            self.data_dir.value = get_seg_dir(self.current_config)
             self.config_template.value = self.current_config['config_template']
             self.cores_input.setValue(self.current_config['cores'])
             self.segmentation_container._set_values(self.current_config['segmentation_values'])
@@ -831,8 +842,8 @@ class ExperimentManager(QWidget):
 
         # Point work_dir at the source's parent so the dropdown finds it.
         self.work_dir.value = str(plan.exp_dir.parent)
-        if 'data_dir' in plan.config_to_write:
-            self.data_dir.value = plan.config_to_write['data_dir']
+        if get_seg_dir(plan.config_to_write):
+            self.data_dir.value = get_seg_dir(plan.config_to_write)
         if 'segmentation_values' in plan.config_to_write:
             self.segmentation_container._set_values(
                 plan.config_to_write['segmentation_values']

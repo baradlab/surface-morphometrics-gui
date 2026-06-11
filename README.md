@@ -25,15 +25,22 @@ Surface Morphometrics GUI lets you run the full surface morphometrics pipeline w
 
 ### Install the pipeline and GUI
 
+The GUI drives the **packaged** surface morphometrics pipeline through its
+`morphometrics` command-line interface, so the package must be installed (pip)
+into the same conda environment as the GUI.
+
 ```bash
-# Install the surface morphometrics pipeline
+# Install the surface morphometrics pipeline (packaging branch = installable CLI)
 git clone https://github.com/GrotjahnLab/surface_morphometrics.git
 cd surface_morphometrics
+git checkout packaging
 conda env create -f environment.yml
 conda activate morphometrics
+pip install -e .            # installs the `morphometrics` CLI into this env
+morphometrics --help       # verify the CLI is on PATH
 cd ..
 
-# Clone the GUI
+# Clone the GUI (run it from the same `morphometrics` env)
 git clone https://github.com/baradlab/surface-morphometrics-gui.git
 ```
 
@@ -53,7 +60,7 @@ python main.py
 4. **Distance & orientation** — Measure inter/intra-membrane distances in the Distance tab
 5. **Visualize** — View meshes colored by properties with the built-in 3D viewer
 
-> **Config template location matters**: Keep your config template inside the `surface_morphometrics` directory. The GUI detects analysis scripts based on the template's location.
+> **Requires the `morphometrics` CLI**: The GUI runs each pipeline step by invoking the installed `morphometrics` command (see Installation). If you see a "morphometrics CLI not found" error, activate the conda environment where you ran `pip install -e .` for the pipeline, then launch the GUI from that same environment.
 
 ## Documentation
 
