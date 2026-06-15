@@ -6,13 +6,70 @@ CLI (``morphometrics pycurv config.yml ...``). This module resolves the command
 prefix for that CLI and maps each GUI pipeline step to its subcommand name.
 """
 import importlib.util
+import os
 import shutil
 import sys
+from pathlib import Path
 
 # `morphometrics` subcommand names for each GUI pipeline step.
 MAKE_MESHES = "make_meshes"
 PYCURV = "pycurv"
 DISTANCES_ORIENTATIONS = "distances_orientations"
+
+
+def results_dir(work_dir_field, exp_name):
+    """Canonical output directory for an experiment: ``<work_dir>/<exp_name>/results``.
+
+    Every pipeline step reads and writes here. Keeping it in one place stops
+    the three job tabs from drifting into disagreeing locations.
+    """
+    return Path(work_dir_field) / str(exp_name) / "results"
+
+
+def cli_work_dir(results_directory):
+    """The ``work_dir`` value to write into config.yml for the CLI.
+
+    The packaged pipeline builds output paths by string concatenation
+    (``work_dir + basename``), so ``work_dir`` MUST end in a path separator and
+    point at the single directory shared by every step.
+    """
+    return str(results_directory) + os.sep
+
+
+# Filenames the pipeline produces at any stage — used to detect whether a
+# directory already holds pipeline outputs.
+_OUTPUT_MARKERS = ("*.surface.vtp", "*.AVV_rh*.gt", "*.AVV_rh*.vtp",
+                   "*.AVV_rh*.csv", "*.ply", "*.xyz")
+
+
+def _has_pipeline_outputs(directory):
+    directory = Path(directory)
+    if not directory.is_dir():
+        return False
+    return any(next(directory.glob(pattern), None) is not None
+               for pattern in _OUTPUT_MARKERS)
+
+
+def resolve_work_dir(exp_dir):
+    """The directory the pipeline reads from and writes to for an experiment.
+
+    The GUI organizes outputs under ``<exp_dir>/results``, but a CLI user runs
+    the pipeline with everything flat in the experiment directory itself. To
+    drive the CLI for either layout without moving files, pick whichever
+    directory already holds outputs:
+
+    - ``results/`` when it contains pipeline outputs (GUI-organized, or a
+      project adopted via "Import CLI Project");
+    - ``exp_dir`` when outputs sit flat there (a raw CLI project being resumed);
+    - ``results/`` otherwise (a fresh experiment — keep GUI output organized).
+    """
+    exp_dir = Path(exp_dir)
+    organized = exp_dir / "results"
+    if _has_pipeline_outputs(organized):
+        return organized
+    if _has_pipeline_outputs(exp_dir):
+        return exp_dir
+    return organized
 
 
 def resolve_cli_runner():

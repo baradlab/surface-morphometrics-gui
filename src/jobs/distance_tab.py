@@ -11,7 +11,14 @@ from qtpy.QtCore import QTimer
 from ruamel.yaml import YAML
 from qtpy.QtWidgets import QMessageBox, QScrollArea, QVBoxLayout, QWidget
 from utils.archive_utils import check_and_archive_outputs
-from utils.script_resolver import resolve_cli_runner, CLI_MISSING_MESSAGE, DISTANCES_ORIENTATIONS, get_seg_dir
+from utils.script_resolver import (
+    resolve_cli_runner,
+    CLI_MISSING_MESSAGE,
+    DISTANCES_ORIENTATIONS,
+    get_seg_dir,
+    resolve_work_dir,
+    cli_work_dir,
+)
 
 from widgets.job_status import JobStatusWidget
 
@@ -242,10 +249,11 @@ class DistanceOrientationWidget(QWidget):
             config_path = preferred_config_path
             existing = copy.deepcopy(self.experiment_manager.current_config)
 
-        # Distance tab specific: work_dir should point to results
-        results_dir = exp_dir / 'results'
-        results_dir.mkdir(exist_ok=True)
-        existing['work_dir'] = str(results_dir) + os.sep
+        # All steps share one output directory (results/ or the flat exp_dir
+        # for an adopted CLI project); trailing separator required by the CLI.
+        out_dir = resolve_work_dir(exp_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        existing['work_dir'] = cli_work_dir(out_dir)
         
         # Merge distance settings
         existing.setdefault('distance_and_orientation_measurements', {})
@@ -292,9 +300,9 @@ class DistanceOrientationWidget(QWidget):
              exp_name = self.experiment_manager.experiment_name.currentText()
              exp_dir = work_dir / exp_name
              archive_config_path = exp_dir / f"{exp_name}_config.yml"
-             results_dir = exp_dir / 'results'
-             
-             if not check_and_archive_outputs(self.native, results_dir, config_path=archive_config_path, file_patterns=['*.csv', '*.svg', '*.png'], exclude_patterns=['*AVV*', '*VV*', '*.gt', '*_runtimes.csv']):
+             archive_dir = resolve_work_dir(exp_dir)
+
+             if not check_and_archive_outputs(self.native, archive_dir, config_path=archive_config_path, file_patterns=['*.csv', '*.svg', '*.png'], exclude_patterns=['*AVV*', '*VV*', '*.gt', '*_runtimes.csv']):
                  return
         except Exception as e:
              print(f"Archive check failed: {e}")
@@ -369,7 +377,9 @@ class DistanceOrientationWidget(QWidget):
                 measurement and still exit 0, a silent no-op.
                 """
 
-                cmd = runner + [DISTANCES_ORIENTATIONS, str(config_path), mrc_file.name]
+                # -f skips the interactive core-oversubscription prompt that
+                # would otherwise hang the subprocess forever (no stdin).
+                cmd = runner + [DISTANCES_ORIENTATIONS, str(config_path), mrc_file.name, '-f']
                 print(f"--- Running for: {mrc_file.name} ---")
                 print(f"Executing: {' '.join(cmd)}")
 

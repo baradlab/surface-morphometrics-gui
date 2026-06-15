@@ -137,8 +137,10 @@ class CliImportPlan:
 
     @property
     def overlays(self) -> dict[str, Any]:
+        # Imported result files live in results/, which is the work_dir every
+        # pipeline step reads/writes (trailing separator required by the CLI).
         return {
-            'work_dir': str(self.exp_dir),
+            'work_dir': str(self.results_dir) + os.sep,
             'exp_name': self.exp_name,
             'cores': self.inputs.cores,
         }
@@ -222,7 +224,7 @@ def build_plan(
             continue
         moves.append((src, results_dir / src.name))
 
-    config_data['work_dir'] = str(exp_dir)
+    config_data['work_dir'] = str(results_dir) + os.sep
     config_data['exp_name'] = exp_name
     config_data['cores'] = inputs.cores
 

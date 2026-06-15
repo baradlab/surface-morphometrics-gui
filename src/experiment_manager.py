@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import os
 import shutil
 import napari
-from utils.script_resolver import get_seg_dir
+from utils.script_resolver import get_seg_dir, resolve_work_dir, cli_work_dir
 
 logger = logging.getLogger(__name__)
 
@@ -392,9 +392,12 @@ class ExperimentManager(QWidget):
         if not work_dir.exists():
             return
         
+        # Recognize both GUI experiments (<name>_config.yml) and raw CLI
+        # projects (plain config.yml from `morphometrics new_config`) so a
+        # CLI output folder dropped under the work dir can be resumed.
         existing_experiments = [
-            d.name for d in work_dir.iterdir() 
-            if d.is_dir() and list(d.glob('*_config.yml'))
+            d.name for d in work_dir.iterdir()
+            if d.is_dir() and (list(d.glob('*_config.yml')) or (d / 'config.yml').is_file())
         ]
         
         if existing_experiments:
@@ -454,6 +457,9 @@ class ExperimentManager(QWidget):
 
             # Update current config
             self.current_config = existing_config
+            # Reflect where this experiment's files actually live (results/ or
+            # the flat exp_dir for a raw CLI project).
+            self.current_config['work_dir'] = cli_work_dir(resolve_work_dir(exp_dir))
 
             # Block config_template.changed while restoring UI so that
             # _handle_config_template_selection does not re-load the
@@ -549,9 +555,10 @@ class ExperimentManager(QWidget):
         if self.current_config:
             if self.data_dir.value:
                 self.current_config['seg_dir'] = str(self.data_dir.value)
-
-            if self.work_dir.value:
-                self.current_config['work_dir'] = str(self.work_dir.value)
+            # Note: work_dir is owned by the job tabs / resume logic, which
+            # resolve it to the experiment's output dir. The work_dir field
+            # here is the PARENT of all experiments, so it must NOT be written
+            # into the config as work_dir.
 
         self._check_start_button_state()
 
@@ -681,7 +688,12 @@ class ExperimentManager(QWidget):
             # Make sure we use the correct paths
 
             self._update_config_paths()
-            
+
+            # Point work_dir at this experiment's actual output directory
+            # (results/ if organized, the flat exp_dir for a raw CLI project)
+            # so the config the tabs read matches where the files really are.
+            self.current_config['work_dir'] = cli_work_dir(resolve_work_dir(exp_dir))
+
             # Emit signal that config was loaded - this will update job tabs
             self.config_loaded.emit()
             
@@ -733,12 +745,17 @@ class ExperimentManager(QWidget):
 
             new_config_path = experiment_dir / f"{experiment_name}_config.yml"
 
+            # Every pipeline step reads/writes the experiment's output dir
+            # (results/ for a fresh experiment).
+            meshes_dir = resolve_work_dir(experiment_dir)
+            meshes_dir.mkdir(parents=True, exist_ok=True)
+
             config_data, config_template_path = self._load_config_template()
 
             # Update only the UNIVERSAL section
             config_data['seg_dir'] = str(self.data_dir.value)  # segmentation MRC directory (CLI key)
             config_data.pop('data_dir', None)  # drop legacy key so the CLI doesn't warn
-            config_data['work_dir'] = str(experiment_dir)
+            config_data['work_dir'] = cli_work_dir(meshes_dir)
             config_data['exp_name'] = experiment_name  # Add experiment name to config
             config_data['cores'] = self.cores_input.value()  # Add cores to config
             config_data['segmentation_values'] = self.segmentation_container.get_values()  # Add segmentation values to config

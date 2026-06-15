@@ -11,7 +11,13 @@ from qtpy.QtCore import QTimer
 from ruamel.yaml import YAML
 from qtpy.QtWidgets import QScrollArea, QWidget, QVBoxLayout, QCheckBox, QLabel, QPushButton, QHBoxLayout, QMessageBox
 from utils.archive_utils import check_and_archive_outputs
-from utils.script_resolver import resolve_cli_runner, CLI_MISSING_MESSAGE, PYCURV
+from utils.script_resolver import (
+    resolve_cli_runner,
+    CLI_MISSING_MESSAGE,
+    PYCURV,
+    resolve_work_dir,
+    cli_work_dir,
+)
 
 # This assumes you have a JobStatusWidget defined elsewhere in your project.
 from widgets.job_status import JobStatusWidget
@@ -117,13 +123,15 @@ class PyCurvWidget(QWidget):
                 self.vtp_file_list_layout.addWidget(label)
                 print(f"[PyCurvWidget] Could not determine experiment directory: {e}")
                 return
-            vtp_files = sorted(list(exp_dir.glob('*.surface.vtp')) + list(exp_dir.glob('*.SURFACE.VTP')))
-            if not vtp_files and (exp_dir / 'meshes').exists():
-                vtp_files.extend(sorted(list((exp_dir / 'meshes').glob('*.surface.vtp')) + 
-                                   list((exp_dir / 'meshes').glob('*.SURFACE.VTP'))))
-            if not vtp_files and (exp_dir / 'results').exists():
-                vtp_files.extend(sorted(list((exp_dir / 'results').glob('*.surface.vtp')) + 
-                                  list((exp_dir / 'results').glob('*.SURFACE.VTP'))))
+            # Look where this experiment's outputs live (results/ or the flat
+            # exp_dir), then the legacy meshes/ dir as a last resort.
+            search_dirs = [resolve_work_dir(exp_dir), exp_dir / 'meshes']
+            vtp_files = []
+            for d in search_dirs:
+                if d.exists():
+                    vtp_files = sorted(list(d.glob('*.surface.vtp')) + list(d.glob('*.SURFACE.VTP')))
+                    if vtp_files:
+                        break
             print(f"[PyCurvWidget] Found VTP files: {[str(f) for f in vtp_files]}")
             if not vtp_files:
                 label = QLabel("No VTP files found. Generate surface meshes first.")
@@ -189,9 +197,12 @@ class PyCurvWidget(QWidget):
             config_path = preferred_config_path
             existing = copy.deepcopy(self.experiment_manager.current_config)
 
-        # Ensure base fields are correct
-        # Add trailing separator so curvature script can concatenate "results" correctly
-        existing['work_dir'] = str(exp_dir) + os.sep
+        # All steps read/write a single directory; the trailing separator is
+        # required because the CLI concatenates work_dir + basename. Use the
+        # layout the surfaces already live in (results/ or the flat exp_dir).
+        out_dir = resolve_work_dir(exp_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        existing['work_dir'] = cli_work_dir(out_dir)
         existing['cores'] = self.experiment_manager.cores_input.value()
 
         # Merge curvature settings
@@ -238,11 +249,10 @@ class PyCurvWidget(QWidget):
         # Archive check for PyCurv (Targets 'measurements' to keep data clean)
         # We now generate specific patterns for the selected files to avoid false positive prompts
         try:
-             work_dir = Path(self.experiment_manager.work_dir.value)
              exp_name = self.experiment_manager.experiment_name.currentText()
-             exp_dir = work_dir / exp_name
-             results_dir = exp_dir / 'results'
-             
+             exp_dir = Path(self.experiment_manager.work_dir.value) / exp_name
+             archive_dir = resolve_work_dir(exp_dir)
+
              # Generate specific patterns for selected files
              base_patterns = ['*AVV*', '*VV*', '*.log', '*.csv', '*.gt', '*.svg', '*.png']
              specific_patterns = []
@@ -258,7 +268,7 @@ class PyCurvWidget(QWidget):
              # Use specific patterns if we have selected files, otherwise fallback 
              patterns_to_check = specific_patterns if specific_patterns else base_patterns
 
-             if not check_and_archive_outputs(self, results_dir, config_path=config_path, file_patterns=patterns_to_check):
+             if not check_and_archive_outputs(self, archive_dir, config_path=config_path, file_patterns=patterns_to_check):
                  print("User cancelled.")
                  return
         except Exception as e:
@@ -280,7 +290,8 @@ class PyCurvWidget(QWidget):
             'runner': runner,
             'config_path': config_path,
             'files': selected_vtp_files,
-            'cores': cores
+            'cores': cores,
+            'radius_hit': self.radius_hit_input.value,
         }
         
         threading.Thread(target=self._run_job_worker, args=(job_data,), daemon=True).start()
@@ -291,9 +302,12 @@ class PyCurvWidget(QWidget):
             runner = job_data['runner']
             config_path = job_data['config_path']
             selected_vtp_files = job_data['files']
+            radius_hit = job_data['radius_hit']
 
-            # Derive directories from the saved config path to avoid stale current_config on first run
-            work_dir = Path(config_path).parent.resolve()
+            # The CLI reads and writes the experiment's output directory (the
+            # saved work_dir). Resolve it the same way _update_config did so the
+            # bare-basename surface argument and outputs line up.
+            work_dir = resolve_work_dir(Path(config_path).parent).resolve()
 
             total_files = len(selected_vtp_files)
             processed_count = 0
@@ -320,28 +334,40 @@ class PyCurvWidget(QWidget):
 
             def process_vtp_file(vtp_file_path):
                 vtp_file = Path(vtp_file_path)
-                try:
-                    vtp_file_arg = vtp_file.relative_to(work_dir)
-                except ValueError:
-                    print(f"[ERROR] File {vtp_file} is not inside the working directory {work_dir}.")
+                if not vtp_file.name.endswith('.surface.vtp'):
+                    print(f"[ERROR] {vtp_file.name} is not a .surface.vtp file.")
                     return {'file_name': vtp_file.name, 'return_code': -1}
 
-                # Pass the ORIGINAL CONFIG path
-                cmd = runner + [PYCURV, str(config_path), str(vtp_file_arg)]
-                
+                # curvature.run_pycurv derives the basename by stripping the
+                # suffix and builds outputs as work_dir + basename, so the
+                # surface argument MUST be a bare filename (no directory).
+                # -f skips the interactive core-oversubscription prompt, which
+                # would otherwise hang the subprocess forever (no stdin).
+                cmd = runner + [PYCURV, str(config_path), vtp_file.name, '-f']
+
                 print(f"--- Starting: {vtp_file.name} ---")
-                
+
+                stem = vtp_file.name[:-len('.surface.vtp')]
+                expected_gt = work_dir / f"{stem}.AVV_rh{radius_hit}.gt"
                 try:
                     subprocess.run(cmd, cwd=work_dir, check=True, text=True)
-                    print(f"--- Finished Successfully: {vtp_file.name} ---")
-                    return {'file_name': vtp_file.name, 'return_code': 0}
-
                 except subprocess.CalledProcessError:
                     print(f"[ERROR] Subprocess for {vtp_file.name} failed. Check terminal output for details.")
                     return {'file_name': vtp_file.name, 'return_code': 1}
                 except Exception as e:
                     print(f"[ERROR] An unexpected error occurred while processing {vtp_file.name}: {e}")
                     return {'file_name': vtp_file.name, 'return_code': -1}
+
+                # pycurv catches per-surface errors and still exits 0, so an
+                # exit code of 0 does not mean this surface succeeded. Confirm
+                # the curvature graph was actually written.
+                if not expected_gt.exists():
+                    print(f"[ERROR] {vtp_file.name}: pycurv produced no output "
+                          f"({expected_gt.name}). The surface likely failed; check the log.")
+                    return {'file_name': vtp_file.name, 'return_code': 1}
+
+                print(f"--- Finished Successfully: {vtp_file.name} ---")
+                return {'file_name': vtp_file.name, 'return_code': 0}
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=n_jobs) as executor:
                 future_to_file = {executor.submit(process_vtp_file, fp): fp for fp in selected_vtp_files}

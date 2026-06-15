@@ -242,7 +242,7 @@ class TestCliImportPlanner:
         scan = ScanResult([tmp_path / "a.vtp"], [], False)
         plan, err = build_plan(inp, scan)
         assert err is None
-        assert plan.config_to_write["work_dir"] == str(plan.exp_dir)
+        assert plan.config_to_write["work_dir"] == str(plan.results_dir) + os.sep
         assert plan.config_to_write["exp_name"] == plan.exp_name
         assert plan.config_to_write["cores"] == 8
 
@@ -399,7 +399,7 @@ class TestImportCliProjectFlow:
         # Source IS the experiment dir; files moved into results/
         assert (cli / "results" / "tomo1.vtp").is_file()
         cfg = _read_yaml(cli / f"{cli.name}_config.yml")
-        assert cfg["work_dir"] == str(cli)
+        assert cfg["work_dir"] == str(cli / "results") + os.sep
         assert cfg["exp_name"] == cli.name
 
     def test_dialog_rejected_makes_no_changes(self, qapp, tmp_path, monkeypatch):
@@ -439,3 +439,51 @@ class TestImportCliProjectFlow:
         monkeypatch.setattr(ci, "execute_plan", lambda p: fake_result)
         em._import_cli_project()
         assert any("Adopted With Errors" in args[1] for args in seen["warning"])
+
+
+class TestResolveWorkDir:
+    """resolve_work_dir picks the directory a project's outputs actually live in,
+    so both GUI-organized (results/) and raw flat CLI projects work without
+    moving files."""
+
+    def test_fresh_experiment_defaults_to_results(self, tmp_path):
+        from utils.script_resolver import resolve_work_dir
+        exp = tmp_path / "exp"
+        exp.mkdir()
+        assert resolve_work_dir(exp) == exp / "results"
+
+    def test_organized_layout_uses_results(self, tmp_path):
+        from utils.script_resolver import resolve_work_dir
+        exp = tmp_path / "exp"
+        (exp / "results").mkdir(parents=True)
+        (exp / "results" / "TE1_OMM.surface.vtp").write_text("x")
+        assert resolve_work_dir(exp) == exp / "results"
+
+    def test_flat_cli_layout_uses_exp_dir(self, tmp_path):
+        from utils.script_resolver import resolve_work_dir
+        exp = tmp_path / "exp"
+        exp.mkdir()
+        (exp / "TE1_OMM.surface.vtp").write_text("x")
+        assert resolve_work_dir(exp) == exp
+
+    def test_flat_gt_outputs_detected(self, tmp_path):
+        from utils.script_resolver import resolve_work_dir
+        exp = tmp_path / "exp"
+        exp.mkdir()
+        (exp / "TE1_OMM.AVV_rh9.gt").write_text("x")
+        assert resolve_work_dir(exp) == exp
+
+    def test_results_wins_when_both_have_outputs(self, tmp_path):
+        from utils.script_resolver import resolve_work_dir
+        exp = tmp_path / "exp"
+        (exp / "results").mkdir(parents=True)
+        (exp / "results" / "TE1_OMM.AVV_rh9.gt").write_text("x")
+        (exp / "TE1_OMM.surface.vtp").write_text("x")
+        assert resolve_work_dir(exp) == exp / "results"
+
+    def test_non_output_files_do_not_count_as_flat(self, tmp_path):
+        from utils.script_resolver import resolve_work_dir
+        exp = tmp_path / "exp"
+        exp.mkdir()
+        (exp / "exp_config.yml").write_text("x")  # config alone is not an output
+        assert resolve_work_dir(exp) == exp / "results"

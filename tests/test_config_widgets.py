@@ -1,6 +1,6 @@
 """Tests for IntraListEditor and InterDictEditor widgets."""
 import pytest
-from morphometrics_config import IntraListEditor, InterDictEditor
+from jobs.distance_tab import IntraListEditor, InterDictEditor
 
 
 @pytest.mark.gui

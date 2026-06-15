@@ -1,5 +1,4 @@
 from pathlib import Path
-import re
 import subprocess
 import sys
 import os
@@ -10,7 +9,13 @@ from qtpy.QtCore import QTimer, Signal, QObject
 from qtpy.QtWidgets import QWidget, QMessageBox, QScrollArea, QVBoxLayout
 import threading
 from utils.archive_utils import check_and_archive_outputs
-from utils.script_resolver import resolve_cli_runner, CLI_MISSING_MESSAGE, MAKE_MESHES
+from utils.script_resolver import (
+    resolve_cli_runner,
+    CLI_MISSING_MESSAGE,
+    MAKE_MESHES,
+    resolve_work_dir,
+    cli_work_dir,
+)
 
 class MeshGenerationWidget(QWidget):
     """Widget for surface mesh generation settings"""
@@ -128,7 +133,7 @@ class MeshGenerationWidget(QWidget):
         except Exception as e:
             print(f'[MeshTab] Could not determine experiment directory: {e}')
         if exp_dir and exp_dir.exists():
-            meshes_dir = exp_dir / 'results'
+            meshes_dir = resolve_work_dir(exp_dir)
             mesh_files = list(meshes_dir.glob('*.ply')) + list(meshes_dir.glob('*.surface.vtp')) + list(meshes_dir.glob('*.xyz'))
             if mesh_files:
                 self.status.update_status('Completed')
@@ -149,19 +154,25 @@ class MeshGenerationWidget(QWidget):
             exp_dir = Path(self.experiment_manager.work_dir.value) / self.experiment_manager.experiment_name.currentText()
             config_path = exp_dir / f"{self.experiment_manager.experiment_name.currentText()}_config.yml"
             
-            # Create meshes directory
-            meshes_dir = exp_dir / 'results'
-            meshes_dir.mkdir(exist_ok=True)
-        
+            # The directory every step shares (results/ for GUI-organized or
+            # fresh experiments; the flat exp_dir for an adopted CLI project).
+            meshes_dir = resolve_work_dir(exp_dir)
+            meshes_dir.mkdir(parents=True, exist_ok=True)
+
             if not config_path.exists():
                 raise FileNotFoundError(f"Config file not found: {config_path}")
-        
+
             # Load existing config
             yaml = YAML()
             with open(config_path, 'r') as f:
                 config = yaml.load(f)
 
-            # Update surface generation settings and output dir
+            # Point the CLI at results/ so meshes land there directly (the CLI
+            # builds output paths as work_dir + basename, so a trailing
+            # separator is required).
+            config['work_dir'] = cli_work_dir(meshes_dir)
+
+            # Update surface generation settings
             config['surface_generation'] = {
                 'angstroms': self.angstroms.value,
                 'ultrafine': self.ultrafine.value,
@@ -174,7 +185,6 @@ class MeshGenerationWidget(QWidget):
                 'point_weight': self.point_weight.value,
                 'neighbor_count': self.neighbor_count.value,
                 'smoothing_iterations': self.smoothing_iterations.value,
-                'output_dir': str(meshes_dir)  # Pass to script
             }
 
             # Save config
@@ -204,6 +214,20 @@ class MeshGenerationWidget(QWidget):
         if runner is None:
             QMessageBox.critical(self, "morphometrics CLI not found", CLI_MISSING_MESSAGE)
             print(f"[Error] {CLI_MISSING_MESSAGE}")
+            return
+
+        # Fail fast if there are no segmentations to mesh — otherwise the CLI
+        # runs, finds nothing, and exits 0, leaving the user with an empty
+        # results/ and no idea why.
+        seg_dir = self.experiment_manager.data_dir.value
+        if not seg_dir or not Path(seg_dir).is_dir():
+            QMessageBox.critical(self, "No segmentation directory",
+                                 f"Segmentation directory not found:\n{seg_dir}")
+            return
+        mrc_files = [f for f in Path(seg_dir).glob('*.mrc') if not f.name.startswith('._')]
+        if not mrc_files:
+            QMessageBox.critical(self, "No segmentations found",
+                                 f"No .mrc segmentation files found in:\n{seg_dir}")
             return
 
         # Check for existing results and prompt specifically for Mesh Generation (Archives ALL)
@@ -261,58 +285,23 @@ class MeshGenerationWidget(QWidget):
                             self.status.update_progress(progress)
             return_code = process.wait()
             if return_code == 0:
-                # segmentation_to_meshes.py treats work_dir as a path prefix, so
-                # outputs land in exp_dir.parent with names like
-                # "<exp_name><seg>_<label>.ply" — not inside exp_dir itself.
-                # Sweep both locations, but in the parent restrict to files
-                # prefixed with this experiment's name so we don't steal output
-                # from sibling experiments.
-                exp_name = exp_dir.name
-                moved_files = []
-                sweep_specs = [
-                    (exp_dir, ['*.ply', '*.surface.vtp', '*.xyz']),
-                    (exp_dir.parent, [f'{exp_name}*.ply', f'{exp_name}*.surface.vtp', f'{exp_name}*.xyz']),
-                ]
-                for sweep_dir, patterns in sweep_specs:
-                    if not sweep_dir.exists():
-                        continue
-                    for pattern in patterns:
-                        for f in sweep_dir.glob(pattern):
-                            if not f.is_file():
-                                continue
-                            # Skip anything already inside meshes_dir
-                            try:
-                                if f.resolve().is_relative_to(meshes_dir.resolve()):
-                                    continue
-                            except AttributeError:
-                                # Python <3.9 fallback
-                                if str(f.resolve()).startswith(str(meshes_dir.resolve())):
-                                    continue
-                            # Strip the experiment-name prefix when present so
-                            # downstream tools see clean "<seg>_<label>" names.
-                            name = f.name
-                            if name.startswith(exp_name):
-                                name = name[len(exp_name):]
-                            # Also strip any stray leading digits before letters
-                            sanitized_name = re.sub(r'^[0-9]+(?=[A-Za-z])', '', name)
-                            dest_path = meshes_dir / sanitized_name
-                            try:
-                                f.rename(dest_path)
-                                moved_files.append(dest_path)
-                            except Exception as e:
-                                print(f"Error moving {f}: {e}")
-                
-                # Check if files exist in results directory (whether moved or already there)
-                mesh_files = list(meshes_dir.glob('*.ply')) + list(meshes_dir.glob('*.surface.vtp')) + list(meshes_dir.glob('*.xyz'))
+                # The CLI writes meshes straight into work_dir (== results/),
+                # so just confirm the expected outputs are there.
+                mesh_files = (list(meshes_dir.glob('*.surface.vtp'))
+                              + list(meshes_dir.glob('*.ply'))
+                              + list(meshes_dir.glob('*.xyz')))
                 if mesh_files:
                     self.status.update_status('Completed')
                     self.status.update_progress(100)
-                    print(f"Added {len(moved_files)} files to results")
-                    # Emit signal that mesh generation is complete - this will trigger other tabs to refresh
+                    vtp_count = len(list(meshes_dir.glob('*.surface.vtp')))
+                    print(f"Generated {vtp_count} surface mesh(es) in {meshes_dir}")
+                    # Notify other tabs (e.g. PyCurv) to refresh their file lists.
                     QTimer.singleShot(100, lambda: self.mesh_generation_complete.emit())
                 else:
                     self.status.update_status('Warning: No mesh files found')
-                    print("Warning: Process completed but no mesh files found in results directory")
+                    print("Warning: Process completed but no mesh files found in "
+                          f"{meshes_dir}. Check that seg_dir contains .mrc files and "
+                          "segmentation_values match the segmentation labels.")
             else:
                 self.status.update_status('Failed')
                 print("Process failed! Check output for details.")
