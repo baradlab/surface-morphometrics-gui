@@ -36,3 +36,12 @@ surface-morphometrics-gui = "surface_morphometrics_gui.main:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["surface_morphometrics_gui*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+qt_api = "pyqt5"
+markers = [
+    "gui: marks tests that require a Qt display (deselect with '-m \"not gui\"')",
+    "integration: marks tests that need real data paths",
+]

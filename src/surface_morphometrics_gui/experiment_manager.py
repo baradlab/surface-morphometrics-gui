@@ -151,10 +151,6 @@ class ExperimentManager(QWidget):
     def __init__(self, viewer):
         super().__init__()
         self.viewer = viewer
-        self.config_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)),
-            'config.yml'
-        )
         self.current_config = {}
         # Set size policies for better resizing
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
