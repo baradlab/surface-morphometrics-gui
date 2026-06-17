@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import os
 import shutil
 import napari
-from utils.script_resolver import get_seg_dir, resolve_work_dir, cli_work_dir
+from .utils.script_resolver import get_seg_dir, resolve_work_dir, cli_work_dir
 
 logger = logging.getLogger(__name__)
 

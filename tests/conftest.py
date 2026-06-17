@@ -1,11 +1,25 @@
 import os
 import sys
+import importlib
+import pkgutil
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock
 
-# Ensure src is on path
+# Ensure src is on path so the package is importable from a plain checkout.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+# Backward-compat: tests import modules by their bare names (e.g.
+# `from utils.cli_import import ...`). Import every submodule under the real
+# package name first (so package-relative imports resolve correctly), then
+# alias each cached module to its bare name so existing test imports work.
+import surface_morphometrics_gui as _pkg
+_prefix = _pkg.__name__ + "."
+for _info in pkgutil.walk_packages(_pkg.__path__, _prefix):
+    importlib.import_module(_info.name)
+for _full, _mod in list(sys.modules.items()):
+    if _full.startswith(_prefix):
+        sys.modules[_full[len(_prefix):]] = _mod
 
 
 @pytest.fixture(scope="session")

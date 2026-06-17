@@ -10,8 +10,8 @@ from magicgui import widgets
 from qtpy.QtCore import QTimer
 from ruamel.yaml import YAML
 from qtpy.QtWidgets import QScrollArea, QWidget, QVBoxLayout, QCheckBox, QLabel, QPushButton, QHBoxLayout, QMessageBox
-from utils.archive_utils import check_and_archive_outputs
-from utils.script_resolver import (
+from ..utils.archive_utils import check_and_archive_outputs
+from ..utils.script_resolver import (
     resolve_cli_runner,
     CLI_MISSING_MESSAGE,
     PYCURV,
@@ -20,7 +20,7 @@ from utils.script_resolver import (
 )
 
 # This assumes you have a JobStatusWidget defined elsewhere in your project.
-from widgets.job_status import JobStatusWidget
+from ..widgets.job_status import JobStatusWidget
 
 
 class PyCurvWidget(QWidget):

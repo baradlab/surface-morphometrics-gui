@@ -33,14 +33,14 @@ To set up your development environment:
    conda activate morphometrics
    ```
 
-4. **Install additional dependencies**
+4. **Install the GUI (editable) into the environment**
    ```bash
-   pip install -r requirements.txt
+   pip install -e .
    ```
 
 5. **Run the GUI**
    ```bash
-   python main.py
+   surface-morphometrics-gui
    ```
 
 If you encounter issues, please open an issue or reach out for help.
@@ -51,7 +51,7 @@ If you encounter issues, please open an issue or reach out for help.
 - Add or update docstrings for all public functions, classes, and modules.
 - Ensure your changes do not break existing functionality.
 - If your contribution changes the UI, please include before/after screenshots.
-- When adding new dependencies, update the documentation and requirements as needed.
+- When adding new dependencies, update `pyproject.toml` and the documentation as needed.
 
 ## Code Style
 - Follow [PEP 8](https://www.python.org/dev/peps/pep-0008/) for Python code.

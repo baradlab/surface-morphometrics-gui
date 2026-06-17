@@ -10,13 +10,13 @@ warnings.filterwarnings("ignore", message="Back buffer dpr of .* doesn't match .
 
 logging.basicConfig(level=logging.INFO)
 
-from jobs.mesh_tab import MeshGenerationWidget
-from jobs.pycurv_tab import PyCurvWidget
-from jobs.distance_tab import DistanceOrientationWidget
-from plugins.tomoslice_plugin import TomoslicePlugin
-from plugins.mesh_viewer import MeshViewer
-from plugins.protein import ProteinLoaderPlugin
-from experiment_manager import ExperimentManager
+from .jobs.mesh_tab import MeshGenerationWidget
+from .jobs.pycurv_tab import PyCurvWidget
+from .jobs.distance_tab import DistanceOrientationWidget
+from .plugins.tomoslice_plugin import TomoslicePlugin
+from .plugins.mesh_viewer import MeshViewer
+from .plugins.protein import ProteinLoaderPlugin
+from .experiment_manager import ExperimentManager
 
 def setup_responsive_layout(viewer):
     """Setup responsive layout behavior for the viewer"""

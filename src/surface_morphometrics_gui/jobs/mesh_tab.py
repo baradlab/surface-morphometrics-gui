@@ -3,13 +3,13 @@ import subprocess
 import sys
 import os
 from magicgui import widgets
-from widgets.job_status import JobStatusWidget
+from ..widgets.job_status import JobStatusWidget
 from ruamel.yaml import YAML
 from qtpy.QtCore import QTimer, Signal, QObject
 from qtpy.QtWidgets import QWidget, QMessageBox, QScrollArea, QVBoxLayout
 import threading
-from utils.archive_utils import check_and_archive_outputs
-from utils.script_resolver import (
+from ..utils.archive_utils import check_and_archive_outputs
+from ..utils.script_resolver import (
     resolve_cli_runner,
     CLI_MISSING_MESSAGE,
     MAKE_MESHES,

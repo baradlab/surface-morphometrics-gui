@@ -16,7 +16,7 @@ from qtpy.QtWidgets import (
     QRadioButton, QTextEdit, QVBoxLayout, QWidget,
 )
 
-from utils.cli_import import (
+from ..utils.cli_import import (
     CliImportInputs, CliImportPlan, PlanError, ScanResult,
     build_plan, looks_like_morphometrics_config, read_yaml, scan_cli_dir,
 )

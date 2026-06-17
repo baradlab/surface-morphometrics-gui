@@ -23,14 +23,28 @@ Surface Morphometrics GUI lets you run the full surface morphometrics pipeline w
 - [Conda](https://docs.conda.io/en/latest/) (Miniconda or Anaconda)
 - Git
 
-### Install the pipeline and GUI
-
 The GUI drives the **packaged** surface morphometrics pipeline through its
-`morphometrics` command-line interface, so the package must be installed (pip)
-into the same conda environment as the GUI.
+`morphometrics` command-line interface, so it must be installed into the same
+conda environment as the pipeline.
+
+#### Already have the pipeline installed?
+
+If you already have the `morphometrics` conda environment (the surface
+morphometrics pipeline), installing the GUI is one command:
 
 ```bash
-# Install the surface morphometrics pipeline (packaging branch = installable CLI)
+conda activate morphometrics
+pip install git+https://github.com/baradlab/surface-morphometrics-gui.git
+surface-morphometrics-gui      # launches the GUI
+```
+
+The pipeline environment already provides the heavy scientific stack (vtk, numpy,
+libigl, …), so pip only adds the GUI's own layer (napari, magicgui, …).
+
+#### From scratch
+
+```bash
+# 1. Install the surface morphometrics pipeline (packaging branch = installable CLI)
 git clone https://github.com/GrotjahnLab/surface_morphometrics.git
 cd surface_morphometrics
 git checkout packaging
@@ -40,16 +54,18 @@ pip install -e .            # installs the `morphometrics` CLI into this env
 morphometrics --help       # verify the CLI is on PATH
 cd ..
 
-# Clone the GUI (run it from the same `morphometrics` env)
-git clone https://github.com/baradlab/surface-morphometrics-gui.git
+# 2. Install the GUI into the same environment
+pip install git+https://github.com/baradlab/surface-morphometrics-gui.git
 ```
+
+For development, clone the GUI and install it editable instead:
+`git clone … && cd surface-morphometrics-gui && pip install -e .`
 
 ### Launch
 
 ```bash
 conda activate morphometrics
-cd surface-morphometrics-gui/src
-python main.py
+surface-morphometrics-gui
 ```
 
 ## Quick start
