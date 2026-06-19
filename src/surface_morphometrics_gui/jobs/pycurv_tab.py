@@ -1,6 +1,6 @@
 import concurrent.futures
+import copy
 import os
-import shutil
 import subprocess
 import sys
 import threading
@@ -10,10 +10,17 @@ from magicgui import widgets
 from qtpy.QtCore import QTimer
 from ruamel.yaml import YAML
 from qtpy.QtWidgets import QScrollArea, QWidget, QVBoxLayout, QCheckBox, QLabel, QPushButton, QHBoxLayout, QMessageBox
-from utils.archive_utils import check_and_archive_outputs
+from ..utils.archive_utils import check_and_archive_outputs
+from ..utils.script_resolver import (
+    resolve_cli_runner,
+    CLI_MISSING_MESSAGE,
+    PYCURV,
+    resolve_work_dir,
+    cli_work_dir,
+)
 
 # This assumes you have a JobStatusWidget defined elsewhere in your project.
-from widgets.job_status import JobStatusWidget
+from ..widgets.job_status import JobStatusWidget
 
 
 class PyCurvWidget(QWidget):
@@ -91,31 +98,6 @@ class PyCurvWidget(QWidget):
         else:
             print("[PyCurvWidget] ExperimentManager does not have 'config_loaded' signal.")
 
-    def _find_pycurv_script(self, start_dir: Path):
-        """Try to find run_pycurv.py relative to the experiment directory.
-        Checks common locations to handle different launch contexts.
-        """
-        candidates = []
-        
-        # Check script_location from config first
-        if self.experiment_manager.current_config and 'script_location' in self.experiment_manager.current_config:
-            candidates.append(Path(self.experiment_manager.current_config['script_location']) / 'run_pycurv.py')
-            
-        candidates.extend([
-            start_dir / 'run_pycurv.py',
-            start_dir.parent / 'run_pycurv.py',
-            start_dir.parent.parent / 'run_pycurv.py',
-            start_dir / 'scripts' / 'run_pycurv.py',
-            start_dir.parent / 'scripts' / 'run_pycurv.py',
-        ])
-        for cand in candidates:
-            try:
-                if cand.exists():
-                    return cand
-            except Exception:
-                pass
-        return None
-
     def _on_select_all_changed(self, event=None):
         is_checked = self.select_all_vtp_checkbox_qt.isChecked()
         for checkbox in self.vtp_checkboxes:
@@ -141,13 +123,15 @@ class PyCurvWidget(QWidget):
                 self.vtp_file_list_layout.addWidget(label)
                 print(f"[PyCurvWidget] Could not determine experiment directory: {e}")
                 return
-            vtp_files = sorted(list(exp_dir.glob('*.surface.vtp')) + list(exp_dir.glob('*.SURFACE.VTP')))
-            if not vtp_files and (exp_dir / 'meshes').exists():
-                vtp_files.extend(sorted(list((exp_dir / 'meshes').glob('*.surface.vtp')) + 
-                                   list((exp_dir / 'meshes').glob('*.SURFACE.VTP'))))
-            if not vtp_files and (exp_dir / 'results').exists():
-                vtp_files.extend(sorted(list((exp_dir / 'results').glob('*.surface.vtp')) + 
-                                  list((exp_dir / 'results').glob('*.SURFACE.VTP'))))
+            # Look where this experiment's outputs live (results/ or the flat
+            # exp_dir), then the legacy meshes/ dir as a last resort.
+            search_dirs = [resolve_work_dir(exp_dir), exp_dir / 'meshes']
+            vtp_files = []
+            for d in search_dirs:
+                if d.exists():
+                    vtp_files = sorted(list(d.glob('*.surface.vtp')) + list(d.glob('*.SURFACE.VTP')))
+                    if vtp_files:
+                        break
             print(f"[PyCurvWidget] Found VTP files: {[str(f) for f in vtp_files]}")
             if not vtp_files:
                 label = QLabel("No VTP files found. Generate surface meshes first.")
@@ -179,7 +163,7 @@ class PyCurvWidget(QWidget):
             if self.experiment_manager.current_config:
                 exp_config = self.experiment_manager.current_config
                 curvature_settings = exp_config.get('curvature_measurements', {})
-                self.radius_hit_input.value = curvature_settings.get('radius_hit', 8)
+                self.radius_hit_input.value = curvature_settings.get('radius_hit', 9)
                 self.min_component_input.value = curvature_settings.get('min_component', 30)
                 self.exclude_borders_input.value = curvature_settings.get('exclude_borders', 1)
         except Exception as e:
@@ -211,12 +195,15 @@ class PyCurvWidget(QWidget):
         else:
             # If neither exists, use preferred path for new file
             config_path = preferred_config_path
-            existing = dict(self.experiment_manager.current_config)
+            existing = copy.deepcopy(self.experiment_manager.current_config)
 
-        # Ensure base fields are correct
-        # Add trailing separator so curvature script can concatenate "results" correctly
-        existing['work_dir'] = str(exp_dir) + os.sep
-        existing['cores'] = self.experiment_manager.current_config.get('cores', 1)
+        # All steps read/write a single directory; the trailing separator is
+        # required because the CLI concatenates work_dir + basename. Use the
+        # layout the surfaces already live in (results/ or the flat exp_dir).
+        out_dir = resolve_work_dir(exp_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        existing['work_dir'] = cli_work_dir(out_dir)
+        existing['cores'] = self.experiment_manager.cores_input.value()
 
         # Merge curvature settings
         existing.setdefault('curvature_measurements', {})
@@ -245,31 +232,11 @@ class PyCurvWidget(QWidget):
             QMessageBox.critical(self, "Error", f"Failed to update config: {e}")
             return
             
-        # Strict script location check
-        script_location = None
-        try:
-            yaml = YAML()
-            with open(config_path, 'r') as f:
-                loaded_config = yaml.load(f) or {}
-            script_location = loaded_config.get('script_location')
-        except Exception as e:
-            print(f"[PyCurvWidget] Error reading config for script_location: {e}")
-        
-        script_path = None
-        if script_location:
-             script_path = Path(script_location) / 'run_pycurv.py'
-        
-        if not script_path or not script_path.exists():
-            error_msg = (
-                "Script 'run_pycurv.py' not found.\n\n"
-                "Please make sure to place the config file you are using as a template "
-                "in the Surface Morphometrics directory.\n\n"
-                "If it is already placed there, please check the 'script_location' path "
-                "in the experiment-specific config file.\n\n"
-                f"Checked location: {script_path if script_path else 'Not defined'}"
-            )
-            QMessageBox.critical(self, "Script Not Found", error_msg)
-            print(f"[Error] {error_msg}")
+        # Resolve the morphometrics CLI (installed package), not a loose script.
+        runner = resolve_cli_runner()
+        if runner is None:
+            QMessageBox.critical(self, "morphometrics CLI not found", CLI_MISSING_MESSAGE)
+            print(f"[Error] {CLI_MISSING_MESSAGE}")
             return
 
         # Collect data from UI in the main thread
@@ -282,11 +249,10 @@ class PyCurvWidget(QWidget):
         # Archive check for PyCurv (Targets 'measurements' to keep data clean)
         # We now generate specific patterns for the selected files to avoid false positive prompts
         try:
-             work_dir = Path(self.experiment_manager.work_dir.value)
              exp_name = self.experiment_manager.experiment_name.currentText()
-             exp_dir = work_dir / exp_name
-             results_dir = exp_dir / 'results'
-             
+             exp_dir = Path(self.experiment_manager.work_dir.value) / exp_name
+             archive_dir = resolve_work_dir(exp_dir)
+
              # Generate specific patterns for selected files
              base_patterns = ['*AVV*', '*VV*', '*.log', '*.csv', '*.gt', '*.svg', '*.png']
              specific_patterns = []
@@ -302,7 +268,7 @@ class PyCurvWidget(QWidget):
              # Use specific patterns if we have selected files, otherwise fallback 
              patterns_to_check = specific_patterns if specific_patterns else base_patterns
 
-             if not check_and_archive_outputs(self, results_dir, config_path=config_path, file_patterns=patterns_to_check):
+             if not check_and_archive_outputs(self, archive_dir, config_path=config_path, file_patterns=patterns_to_check):
                  print("User cancelled.")
                  return
         except Exception as e:
@@ -312,7 +278,7 @@ class PyCurvWidget(QWidget):
             pass
 
         # Get number of cores
-        cores = self.experiment_manager.current_config.get('cores', 6)
+        cores = self.experiment_manager.cores_input.value()
 
         self.is_running = True
         self.submit_btn.enabled = False
@@ -321,10 +287,11 @@ class PyCurvWidget(QWidget):
         
         # Pass all necessary data to worker
         job_data = {
-            'script_path': script_path,
+            'runner': runner,
             'config_path': config_path,
             'files': selected_vtp_files,
-            'cores': cores
+            'cores': cores,
+            'radius_hit': self.radius_hit_input.value,
         }
         
         threading.Thread(target=self._run_job_worker, args=(job_data,), daemon=True).start()
@@ -332,18 +299,15 @@ class PyCurvWidget(QWidget):
     def _run_job_worker(self, job_data):
         """The core worker function that runs the analysis."""
         try:
-            pycurv_script_path = job_data['script_path']
+            runner = job_data['runner']
             config_path = job_data['config_path']
             selected_vtp_files = job_data['files']
-            max_workers = min(job_data['cores'], len(selected_vtp_files))
-            
-            # Derive directories from the saved config path to avoid stale current_config on first run
-            work_dir = Path(config_path).parent.resolve()
-            
-            if not pycurv_script_path.exists(): # Double check just in case
-                print(f"[ERROR] run_pycurv.py not found at {pycurv_script_path}")
-                self.status.update_status('Error: run_pycurv.py not found')
-                return
+            radius_hit = job_data['radius_hit']
+
+            # The CLI reads and writes the experiment's output directory (the
+            # saved work_dir). Resolve it the same way _update_config did so the
+            # bare-basename surface argument and outputs line up.
+            work_dir = resolve_work_dir(Path(config_path).parent).resolve()
 
             total_files = len(selected_vtp_files)
             processed_count = 0
@@ -370,28 +334,40 @@ class PyCurvWidget(QWidget):
 
             def process_vtp_file(vtp_file_path):
                 vtp_file = Path(vtp_file_path)
-                try:
-                    vtp_file_arg = vtp_file.relative_to(work_dir)
-                except ValueError:
-                    print(f"[ERROR] File {vtp_file} is not inside the working directory {work_dir}.")
+                if not vtp_file.name.endswith('.surface.vtp'):
+                    print(f"[ERROR] {vtp_file.name} is not a .surface.vtp file.")
                     return {'file_name': vtp_file.name, 'return_code': -1}
 
-                # Pass the ORIGINAL CONFIG path
-                cmd = [sys.executable, "-u", str(pycurv_script_path), str(config_path), str(vtp_file_arg)]
-                
+                # curvature.run_pycurv derives the basename by stripping the
+                # suffix and builds outputs as work_dir + basename, so the
+                # surface argument MUST be a bare filename (no directory).
+                # -f skips the interactive core-oversubscription prompt, which
+                # would otherwise hang the subprocess forever (no stdin).
+                cmd = runner + [PYCURV, str(config_path), vtp_file.name, '-f']
+
                 print(f"--- Starting: {vtp_file.name} ---")
-                
+
+                stem = vtp_file.name[:-len('.surface.vtp')]
+                expected_gt = work_dir / f"{stem}.AVV_rh{radius_hit}.gt"
                 try:
                     subprocess.run(cmd, cwd=work_dir, check=True, text=True)
-                    print(f"--- Finished Successfully: {vtp_file.name} ---")
-                    return {'file_name': vtp_file.name, 'return_code': 0}
-
                 except subprocess.CalledProcessError:
                     print(f"[ERROR] Subprocess for {vtp_file.name} failed. Check terminal output for details.")
                     return {'file_name': vtp_file.name, 'return_code': 1}
                 except Exception as e:
                     print(f"[ERROR] An unexpected error occurred while processing {vtp_file.name}: {e}")
                     return {'file_name': vtp_file.name, 'return_code': -1}
+
+                # pycurv catches per-surface errors and still exits 0, so an
+                # exit code of 0 does not mean this surface succeeded. Confirm
+                # the curvature graph was actually written.
+                if not expected_gt.exists():
+                    print(f"[ERROR] {vtp_file.name}: pycurv produced no output "
+                          f"({expected_gt.name}). The surface likely failed; check the log.")
+                    return {'file_name': vtp_file.name, 'return_code': 1}
+
+                print(f"--- Finished Successfully: {vtp_file.name} ---")
+                return {'file_name': vtp_file.name, 'return_code': 0}
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=n_jobs) as executor:
                 future_to_file = {executor.submit(process_vtp_file, fp): fp for fp in selected_vtp_files}

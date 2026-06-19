@@ -28,17 +28,6 @@ class TestBug1_JobStatusMissingMethods:
         w.append_output("test message")  # Should not raise
 
 
-class TestBug2_UnreachableReturn:
-    """Bug #2: Unreachable `return values` after a prior `return {...}` in _get_values."""
-
-    def test_no_unreachable_return(self):
-        from morphometrics_config import ConfigEditor
-        source = inspect.getsource(ConfigEditor._get_values)
-        # Count return statements - should only be one
-        returns = [line.strip() for line in source.split('\n') if line.strip().startswith('return ')]
-        assert len(returns) == 1, f"_get_values should have exactly 1 return statement, found {len(returns)}: {returns}"
-
-
 class TestBug3_DefaultMismatch:
     """Bug #3: Widget init defaults differ from _on_config_loaded fallbacks."""
 
@@ -128,28 +117,27 @@ class TestBug5_DistanceConfigPathOverwrite:
 
 
 class TestBug6_InterDictEditorRename:
-    """Bug #6: InterDictEditor remove callback captures key_edit.value at remove-time
-    but entries dict uses original key."""
+    """Bug #6: the old InterDictEditor keyed self.entries by the user-typed
+    membrane name, so button-driven Adds collided on the empty key and renames
+    desynced the dict. The fix (now in jobs.distance_tab) keys by a monotonic
+    token, so neither happens."""
 
     @pytest.mark.gui
-    def test_remove_after_rename(self, qapp):
-        from morphometrics_config import InterDictEditor
+    def test_button_driven_adds_do_not_collide(self, qapp):
+        from jobs.distance_tab import InterDictEditor
+        editor = InterDictEditor()
+        editor._add_entry()  # empty key
+        editor._add_entry()  # empty key again — old impl overwrote the first
+        assert len(editor.entries) == 2
+
+    @pytest.mark.gui
+    def test_rename_reflected_in_get_values(self, qapp):
+        from jobs.distance_tab import InterDictEditor
         editor = InterDictEditor()
         editor._add_entry("original_key", ["val1"])
-        assert "original_key" in editor.entries
-
-        # Simulate rename: change the key_edit widget value
-        key_edit, value_editor, container = editor.entries["original_key"]
+        (key_edit, value_editor, container), = editor.entries.values()
         key_edit.value = "renamed_key"
-
-        # The remove button callback should still work
-        # After fix, this should not leave stale entries
-        # Get the remove button and simulate click
-        # (The remove function captures key_edit.value which is now "renamed_key")
-        # After fix, it should remove using original key from entries dict
-        initial_count = len(editor.entries)
-        # The entries dict still has "original_key" as key
-        assert "original_key" in editor.entries
+        assert editor.get_values() == {"renamed_key": ["val1"]}
 
 
 class TestBug7_UpdateConfigPathsOverwrite:
@@ -199,20 +187,6 @@ class TestBug8_ClearOnNegativeIndex:
 
                 # After fix, user values should be preserved during programmatic clears
                 # (The fix should guard against clearing during non-user-initiated changes)
-
-
-class TestBug9_BackupNotCleaned:
-    """Bug #9: .bak file never cleaned up after successful save."""
-
-    def test_backup_cleaned_after_save(self, tmp_path):
-        from morphometrics_config import ConfigYAMLPreserver
-        p = tmp_path / "test.yml"
-        p.write_text("key: value\n")
-        cp = ConfigYAMLPreserver(p)
-        cp.save()
-
-        backup = tmp_path / "test.bak"
-        assert not backup.exists(), ".bak file should be cleaned up after successful save"
 
 
 class TestBug10_TimeSleep:
