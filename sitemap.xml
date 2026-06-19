@@ -1,43 +1,43 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
-         <loc>https://sitename.example/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <loc>https://baradlab.github.io/surface-morphometrics-gui/</loc>
+         <lastmod>2026-06-19</lastmod>
     </url>
     <url>
-         <loc>https://sitename.example/about/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <loc>https://baradlab.github.io/surface-morphometrics-gui/about/</loc>
+         <lastmod>2026-06-19</lastmod>
     </url>
     <url>
-         <loc>https://sitename.example/getting-started/installation/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <loc>https://baradlab.github.io/surface-morphometrics-gui/getting-started/installation/</loc>
+         <lastmod>2026-06-19</lastmod>
     </url>
     <url>
-         <loc>https://sitename.example/getting-started/quickstart/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <loc>https://baradlab.github.io/surface-morphometrics-gui/getting-started/quickstart/</loc>
+         <lastmod>2026-06-19</lastmod>
     </url>
     <url>
-         <loc>https://sitename.example/guide/curvature-analysis/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <loc>https://baradlab.github.io/surface-morphometrics-gui/guide/curvature-analysis/</loc>
+         <lastmod>2026-06-19</lastmod>
     </url>
     <url>
-         <loc>https://sitename.example/guide/distance-orientation/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <loc>https://baradlab.github.io/surface-morphometrics-gui/guide/distance-orientation/</loc>
+         <lastmod>2026-06-19</lastmod>
     </url>
     <url>
-         <loc>https://sitename.example/guide/experiment-setup/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <loc>https://baradlab.github.io/surface-morphometrics-gui/guide/experiment-setup/</loc>
+         <lastmod>2026-06-19</lastmod>
     </url>
     <url>
-         <loc>https://sitename.example/guide/mesh-generation/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <loc>https://baradlab.github.io/surface-morphometrics-gui/guide/mesh-generation/</loc>
+         <lastmod>2026-06-19</lastmod>
     </url>
     <url>
-         <loc>https://sitename.example/guide/resuming-experiments/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <loc>https://baradlab.github.io/surface-morphometrics-gui/guide/resuming-experiments/</loc>
+         <lastmod>2026-06-19</lastmod>
     </url>
     <url>
-         <loc>https://sitename.example/guide/visualization/</loc>
-         <lastmod>2026-03-10</lastmod>
+         <loc>https://baradlab.github.io/surface-morphometrics-gui/guide/visualization/</loc>
+         <lastmod>2026-06-19</lastmod>
     </url>
 </urlset>

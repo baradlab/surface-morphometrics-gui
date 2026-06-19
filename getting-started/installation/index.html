@@ -8,7 +8,7 @@
       
       
       
-        <link rel="canonical" href="https://sitename.example/getting-started/installation/">
+        <link rel="canonical" href="https://baradlab.github.io/surface-morphometrics-gui/getting-started/installation/">
       
       
         <link rel="prev" href="../..">
@@ -353,10 +353,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#install-the-surface-morphometrics-pipeline" class="md-nav__link">
+  <a href="#if-you-already-have-morphometrics-installed-but-not-the-gui" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Install the surface morphometrics pipeline
+        If you already have morphometrics installed, but not the gui:
       
     </span>
   </a>
@@ -364,10 +364,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#install-the-gui" class="md-nav__link">
+  <a href="#from-scratch" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Install the GUI
+        From scratch
       
     </span>
   </a>
@@ -727,10 +727,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#install-the-surface-morphometrics-pipeline" class="md-nav__link">
+  <a href="#if-you-already-have-morphometrics-installed-but-not-the-gui" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Install the surface morphometrics pipeline
+        If you already have morphometrics installed, but not the gui:
       
     </span>
   </a>
@@ -738,10 +738,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#install-the-gui" class="md-nav__link">
+  <a href="#from-scratch" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Install the GUI
+        From scratch
       
     </span>
   </a>
@@ -794,22 +794,34 @@
 <li><a href="https://docs.conda.io/en/latest/">Conda</a> (Miniconda or Anaconda)</li>
 <li>Git</li>
 </ul>
-<h2 id="install-the-surface-morphometrics-pipeline">Install the surface morphometrics pipeline<a class="headerlink" href="#install-the-surface-morphometrics-pipeline" title="Permanent link">&para;</a></h2>
-<p>The GUI depends on the surface morphometrics pipeline scripts. Install the pipeline first:</p>
+<h2 id="if-you-already-have-morphometrics-installed-but-not-the-gui">If you already have morphometrics installed, but not the gui:<a class="headerlink" href="#if-you-already-have-morphometrics-installed-but-not-the-gui" title="Permanent link">&para;</a></h2>
+<p>If you already have the <code>morphometrics</code> conda environment (the surface
+morphometrics pipeline), installing the GUI is a single command into that
+environment:</p>
+<div class="highlight"><pre><span></span><code>conda<span class="w"> </span>activate<span class="w"> </span>morphometrics
+pip<span class="w"> </span>install<span class="w"> </span>git+https://github.com/baradlab/surface-morphometrics-gui.git
+morphometrics<span class="w"> </span>gui
+</code></pre></div>
+<p>The pipeline environment already provides the heavy scientific stack (vtk, numpy,
+libigl, …), so pip only adds the GUI's own dependencies (napari, magicgui, …).</p>
+<h2 id="from-scratch">From scratch<a class="headerlink" href="#from-scratch" title="Permanent link">&para;</a></h2>
+<p>Install the surface morphometrics pipeline with the <code>[gui]</code> extra, which pulls in
+the GUI alongside the <code>morphometrics</code> CLI in one step:</p>
 <div class="highlight"><pre><span></span><code>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/GrotjahnLab/surface_morphometrics.git
 <span class="nb">cd</span><span class="w"> </span>surface_morphometrics
 conda<span class="w"> </span>env<span class="w"> </span>create<span class="w"> </span>-f<span class="w"> </span>environment.yml
 conda<span class="w"> </span>activate<span class="w"> </span>morphometrics
-<span class="nb">cd</span><span class="w"> </span>..
+pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span>.<span class="o">[</span>gui<span class="o">]</span><span class="w">            </span><span class="c1"># installs the `morphometrics` CLI and the gui</span>
 </code></pre></div>
-<h2 id="install-the-gui">Install the GUI<a class="headerlink" href="#install-the-gui" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/baradlab/surface-morphometrics-gui.git
-</code></pre></div>
+<p>For development, clone the GUI and install it editable: <code>pip install -e .</code> from
+the GUI repo root.</p>
 <h2 id="launch-the-gui">Launch the GUI<a class="headerlink" href="#launch-the-gui" title="Permanent link">&para;</a></h2>
 <p>With the <code>morphometrics</code> conda environment active:</p>
-<div class="highlight"><pre><span></span><code><span class="nb">cd</span><span class="w"> </span>surface-morphometrics-gui/src
-python<span class="w"> </span>main.py
+<div class="highlight"><pre><span></span><code>conda<span class="w"> </span>activate<span class="w"> </span>morphometrics
+morphometrics<span class="w"> </span>gui
 </code></pre></div>
+<p><code>surface-morphometrics-gui</code> is also available as a secondary, development-only
+launcher (the GUI's own console script).</p>
 <div class="admonition tip">
 <p class="admonition-title">Tip</p>
 <p>Always activate the conda environment before launching the GUI:
