@@ -6,7 +6,7 @@ This walkthrough takes you from launching the GUI to viewing your first results.
 
 ```bash
 conda activate morphometrics
-surface-morphometrics-gui
+morphometrics gui
 ```
 
 ![Starting GUI](../images/startup_page.png)

@@ -6,7 +6,7 @@
 - [Conda](https://docs.conda.io/en/latest/) (Miniconda or Anaconda)
 - Git
 
-## Already have the pipeline installed?
+## If you already have morphometrics installed, but not the gui:
 
 If you already have the `morphometrics` conda environment (the surface
 morphometrics pipeline), installing the GUI is a single command into that
@@ -15,7 +15,7 @@ environment:
 ```bash
 conda activate morphometrics
 pip install git+https://github.com/baradlab/surface-morphometrics-gui.git
-surface-morphometrics-gui
+morphometrics gui
 ```
 
 The pipeline environment already provides the heavy scientific stack (vtk, numpy,
@@ -23,26 +23,19 @@ libigl, …), so pip only adds the GUI's own dependencies (napari, magicgui, …
 
 ## From scratch
 
-Install the surface morphometrics pipeline first (it provides the `morphometrics`
-CLI the GUI drives):
+Install the surface morphometrics pipeline with the `[gui]` extra, which pulls in
+the GUI alongside the `morphometrics` CLI in one step:
 
 ```bash
 git clone https://github.com/GrotjahnLab/surface_morphometrics.git
 cd surface_morphometrics
-git checkout packaging
 conda env create -f environment.yml
 conda activate morphometrics
-pip install -e .            # installs the `morphometrics` CLI
-cd ..
+pip install -e .[gui]            # installs the `morphometrics` CLI and the gui
 ```
 
-Then install the GUI into the same environment:
-
-```bash
-pip install git+https://github.com/baradlab/surface-morphometrics-gui.git
-```
-
-For development, clone and install editable: `pip install -e .` from the repo root.
+For development, clone the GUI and install it editable: `pip install -e .` from
+the GUI repo root.
 
 ## Launch the GUI
 
@@ -50,8 +43,11 @@ With the `morphometrics` conda environment active:
 
 ```bash
 conda activate morphometrics
-surface-morphometrics-gui
+morphometrics gui
 ```
+
+`surface-morphometrics-gui` is also available as a secondary, development-only
+launcher (the GUI's own console script).
 
 !!! tip
     Always activate the conda environment before launching the GUI:

@@ -35,7 +35,7 @@ morphometrics pipeline), installing the GUI is one command:
 ```bash
 conda activate morphometrics
 pip install git+https://github.com/baradlab/surface-morphometrics-gui.git
-surface-morphometrics-gui      # launches the GUI
+morphometrics gui
 ```
 
 The pipeline environment already provides the heavy scientific stack (vtk, numpy,
@@ -44,18 +44,14 @@ libigl, …), so pip only adds the GUI's own layer (napari, magicgui, …).
 #### From scratch
 
 ```bash
-# 1. Install the surface morphometrics pipeline (packaging branch = installable CLI)
+# Install the surface morphometrics pipeline with the GUI extra ([gui] pulls in
+# the GUI alongside the `morphometrics` CLI in one step)
 git clone https://github.com/GrotjahnLab/surface_morphometrics.git
 cd surface_morphometrics
-git checkout packaging
 conda env create -f environment.yml
 conda activate morphometrics
-pip install -e .            # installs the `morphometrics` CLI into this env
-morphometrics --help       # verify the CLI is on PATH
-cd ..
-
-# 2. Install the GUI into the same environment
-pip install git+https://github.com/baradlab/surface-morphometrics-gui.git
+pip install -e .[gui]       # installs the `morphometrics` CLI and the gui
+morphometrics --help        # verify the CLI is on PATH
 ```
 
 For development, clone the GUI and install it editable instead:
@@ -65,8 +61,10 @@ For development, clone the GUI and install it editable instead:
 
 ```bash
 conda activate morphometrics
-surface-morphometrics-gui
+morphometrics gui
 ```
+
+`surface-morphometrics-gui` is also available as a secondary, development-only launcher.
 
 ## Quick start
 
