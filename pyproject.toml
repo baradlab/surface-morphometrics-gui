@@ -16,6 +16,8 @@ dependencies = [
     "qtpy",
     "napari-tomoslice",
     "ruamel.yaml",
+    # CLI plugin command (`morphometrics gui` / standalone launcher)
+    "click",
     # I/O
     "mrcfile",
     "starfile",
@@ -32,6 +34,14 @@ dependencies = [
 
 [project.scripts]
 surface-morphometrics-gui = "surface_morphometrics_gui.main:main"
+
+# Contributes a `gui` subcommand to the `morphometrics` CLI (see surface_morphometrics
+# PR #58). The target module MUST stay import-light — heavy imports (napari/Qt) go
+# inside the command callback — so `morphometrics --help` stays fast. Discovery only
+# works when this package is installed in the same environment as the pipeline, which
+# the pipeline's `[gui]` extra guarantees.
+[project.entry-points."morphometrics.commands"]
+gui = "surface_morphometrics_gui._cli:gui"
 
 [tool.setuptools.packages.find]
 where = ["src"]
