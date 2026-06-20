@@ -58,7 +58,7 @@ class MeshGenerationWidget(QWidget):
         self.isotropic_remesh = widgets.CheckBox(value=False, label='Isotropic Remesh')
         self.simplify = widgets.CheckBox(value=False, label='Simplify Surface')
         self.max_triangles = widgets.SpinBox(value=300000, min=1000, max=1000000, label='Max Triangles')
-        self.extrapolation_distance = widgets.FloatSpinBox(value=1.5, min=0.1, max=10.0, step=0.1, label='Extrapolation Distance')
+        self.extrapolation_distance = widgets.FloatSpinBox(value=1.5, min=0.1, max=500.0, step=0.1, label='Extrapolation Distance')
         self.octree_depth = widgets.SpinBox(value=7, min=1, max=15, label='Octree Depth')
         self.point_weight = widgets.FloatSpinBox(value=0.7, min=0.1, max=1.0, step=0.1, label='Point Weight')
         self.neighbor_count = widgets.SpinBox(value=400, min=10, max=1000, label='Neighbor Count')

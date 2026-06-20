@@ -10,6 +10,29 @@ warnings.filterwarnings("ignore", message="Back buffer dpr of .* doesn't match .
 
 logging.basicConfig(level=logging.INFO)
 
+
+def _patch_status_checker_stack_size():
+    # On Apple Silicon (ARM64) the default QThread stack is ~544 KB.
+    # napari's StatusChecker thread calls numpy.linalg.inv(), which dispatches
+    # to OpenBLAS's dgetrf_parallel.  That routine allocates a frame far larger
+    # than 544 KB on ARM64, triggering ___chkstk_darwin → SIGBUS ("bus error").
+    # Increasing the stack to 8 MB avoids the overflow without changing behaviour.
+    from napari._qt.threads.status_checker import StatusChecker
+    from qtpy.QtCore import QThread
+
+    _orig_start = StatusChecker.start
+
+    def _start_with_large_stack(
+        self, priority: QThread.Priority = QThread.Priority.InheritPriority
+    ) -> None:
+        self.setStackSize(8 * 1024 * 1024)  # 8 MB; Qt default is ~544 KB on macOS ARM
+        _orig_start(self, priority)
+
+    StatusChecker.start = _start_with_large_stack
+
+
+_patch_status_checker_stack_size()
+
 from .jobs.mesh_tab import MeshGenerationWidget
 from .jobs.pycurv_tab import PyCurvWidget
 from .jobs.distance_tab import DistanceOrientationWidget
