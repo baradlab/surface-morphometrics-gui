@@ -197,3 +197,55 @@ class TestBug10_TimeSleep:
         source = inspect.getsource(MeshViewer._setup_shading)
         assert "time.sleep" not in source, \
             "_setup_shading should not use time.sleep in UI thread"
+
+
+class TestBug11_CliImportRelativeImports:
+    """Bug #11: _import_cli_project used bare `from widgets.` / `from utils.`
+    imports, which raised ModuleNotFoundError for the installed package
+    (they only resolved when cwd happened to be on sys.path)."""
+
+    def test_import_cli_project_uses_relative_imports(self):
+        import experiment_manager
+        source = inspect.getsource(experiment_manager.ExperimentManager._import_cli_project)
+        assert "from widgets." not in source, \
+            "_import_cli_project must not use bare `from widgets.` import"
+        assert "from utils." not in source, \
+            "_import_cli_project must not use bare `from utils.` import"
+        assert "from .widgets." in source and "from .utils." in source, \
+            "_import_cli_project must use package-relative imports"
+
+    def test_cli_import_targets_are_importable(self):
+        # The modules the relative imports resolve to must actually exist.
+        from surface_morphometrics_gui.widgets.cli_import_dialog import CliImportDialog
+        from surface_morphometrics_gui.utils.cli_import import execute_plan
+        assert CliImportDialog is not None and execute_plan is not None
+
+
+class TestBug12_WidgetRangesClampAngstromConfigs:
+    """Bug #12: widget max ranges were below realistic angstrom-scale config
+    values, so loading e.g. radius_hit: 90 / maxdist: 4000 silently clamped to
+    the widget default (or raised ValueError) instead of taking effect."""
+
+    @pytest.mark.gui
+    def test_radius_hit_accepts_angstrom_scale(self, qapp):
+        from jobs.pycurv_tab import PyCurvWidget
+        w = PyCurvWidget(MagicMock())
+        assert w.radius_hit_input.max >= 90
+        w.radius_hit_input.value = 90
+        assert w.radius_hit_input.value == 90
+
+    @pytest.mark.gui
+    def test_extrapolation_distance_accepts_angstrom_scale(self, qapp, mock_experiment_manager):
+        from jobs.mesh_tab import MeshGenerationWidget
+        w = MeshGenerationWidget(mock_experiment_manager)
+        assert w.extrapolation_distance.max >= 15
+        w.extrapolation_distance.value = 15
+        assert w.extrapolation_distance.value == 15
+
+    @pytest.mark.gui
+    def test_distance_widgets_accept_angstrom_scale(self, qapp):
+        from jobs.distance_tab import DistanceOrientationWidget
+        w = DistanceOrientationWidget(MagicMock())
+        assert w.min_dist.max >= 4000 and w.max_dist.max >= 4000
+        w.max_dist.value = 4000
+        assert w.max_dist.value == 4000

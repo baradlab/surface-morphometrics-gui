@@ -3,6 +3,7 @@ from magicgui import widgets
 from qtpy.QtWidgets import QTabWidget, QSizePolicy, QApplication
 from qtpy import QtCore
 import logging
+import sys
 import warnings
 
 # Filter out VisPy/macOS specific warnings that are harmless
@@ -17,8 +18,24 @@ def _patch_status_checker_stack_size():
     # to OpenBLAS's dgetrf_parallel.  That routine allocates a frame far larger
     # than 544 KB on ARM64, triggering ___chkstk_darwin → SIGBUS ("bus error").
     # Increasing the stack to 8 MB avoids the overflow without changing behaviour.
-    from napari._qt.threads.status_checker import StatusChecker
-    from qtpy.QtCore import QThread
+    #
+    # The small QThread stack is a macOS trait (~512 KB on Intel and Apple
+    # Silicon alike); Linux/Windows default to much larger stacks and don't hit
+    # this. The patch targets a private napari API, so it is gated to macOS and
+    # wrapped defensively: a napari version that moves StatusChecker must not
+    # break startup for everyone.
+    if sys.platform != "darwin":
+        return
+
+    try:
+        from napari._qt.threads.status_checker import StatusChecker
+        from qtpy.QtCore import QThread
+    except ImportError:
+        logging.warning(
+            "Could not patch napari StatusChecker stack size; "
+            "ARM64 SIGBUS workaround is inactive."
+        )
+        return
 
     _orig_start = StatusChecker.start
 
