@@ -238,9 +238,17 @@ class MeshViewer(QWidget):
         mesh_tuple = (vertices, faces, values)
 
         name = os.path.splitext(os.path.basename(filepath))[0]
-        metadata = {'source_vtp_path': filepath}
+        # Only tag VTP files as the source path; other formats (PLY, STL, OBJ)
+        # cannot be re-read by vtkXMLPolyDataReader and would cause an XML parse
+        # error at byte 0 when _initialize_vtp_layer tries to load them.
+        metadata = {'source_vtp_path': filepath} if ext == '.vtp' else {}
+
+        # Surface layers require 3D display mode; switch automatically.
+        if self.viewer.dims.ndisplay != 3:
+            self.viewer.dims.ndisplay = 3
 
         self.viewer.add_surface(mesh_tuple, name=name, metadata=metadata)
+        self.viewer.reset_view()
 
     def _is_vtp_surface_layer(self, layer):
         """Checks if a layer is a Surface derived from a VTP file."""
@@ -586,7 +594,10 @@ class MeshViewer(QWidget):
         # so that AO-darkened areas actually appear darker in the colormap.
         finite_values = new_values[np.isfinite(new_values)]
         if len(finite_values) > 0:
-            original_limits = (float(np.min(finite_values)), float(np.max(finite_values)))
+            lo, hi = float(np.min(finite_values)), float(np.max(finite_values))
+            if lo >= hi:
+                hi = lo + 1e-6  # napari requires strictly increasing contrast limits
+            original_limits = (lo, hi)
         else:
             original_limits = (0.0, 1.0)
 

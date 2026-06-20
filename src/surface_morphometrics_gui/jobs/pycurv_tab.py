@@ -42,7 +42,7 @@ class PyCurvWidget(QWidget):
         settings_container = widgets.Container(layout='vertical', labels=True)
         settings_container.native.layout().setSpacing(5)
         settings_container.native.layout().setContentsMargins(3, 3, 3, 3)
-        self.radius_hit_input = widgets.SpinBox(value=9, min=1, max=20, label='Radius Hit')
+        self.radius_hit_input = widgets.SpinBox(value=9, min=1, max=500, label='Radius Hit')
         self.min_component_input = widgets.SpinBox(value=30, min=1, max=1000, label='Min Component')
         self.exclude_borders_input = widgets.SpinBox(value=1, min=0, max=100, label='Exclude Borders')
         self.n_jobs_input = widgets.SpinBox(value=1, min=1, max=128, label='Concurrent Jobs (Parallel Files)')

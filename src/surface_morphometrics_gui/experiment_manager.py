@@ -804,8 +804,8 @@ class ExperimentManager(QWidget):
         is set to the source's parent so the experiment dropdown picks
         up the new experiment.
         """
-        from widgets.cli_import_dialog import CliImportDialog
-        from utils.cli_import import execute_plan
+        from .widgets.cli_import_dialog import CliImportDialog
+        from .utils.cli_import import execute_plan
 
         template_data, template_path = self._load_config_template()
         dialog = CliImportDialog(
