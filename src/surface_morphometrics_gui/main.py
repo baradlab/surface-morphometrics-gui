@@ -36,6 +36,7 @@ _patch_status_checker_stack_size()
 from .jobs.mesh_tab import MeshGenerationWidget
 from .jobs.pycurv_tab import PyCurvWidget
 from .jobs.distance_tab import DistanceOrientationWidget
+from .jobs.thickness_tab import ThicknessWidget
 from .plugins.tomoslice_plugin import TomoslicePlugin
 from .plugins.mesh_viewer import MeshViewer
 from .plugins.protein import ProteinLoaderPlugin
@@ -69,6 +70,7 @@ def main():
         mesh_widget = MeshGenerationWidget(experiment_manager)
         pycurv_widget = PyCurvWidget(experiment_manager=experiment_manager)
         distance_widget = DistanceOrientationWidget(experiment_manager)
+        thickness_widget = ThicknessWidget(experiment_manager)
 
         # (Mesh completion connection set after dock widgets are created below)
         # Create tomoslice plugin
@@ -84,6 +86,7 @@ def main():
         dw2 = viewer.window.add_dock_widget(mesh_widget, name='Surface Mesh', area='right')
         dw3 = viewer.window.add_dock_widget(pycurv_widget, name='Curvature', area='right')
         dw4 = viewer.window.add_dock_widget(distance_widget.native, name='Distance', area='right')
+        dw5 = viewer.window.add_dock_widget(thickness_widget, name='Thickness', area='right')
 
         # Add Mesh Viewer to the right side, tabified with the other widgets
         dw_mesh = viewer.window.add_dock_widget(
@@ -99,7 +102,8 @@ def main():
         viewer.window._qt_window.tabifyDockWidget(dw1, dw2)
         viewer.window._qt_window.tabifyDockWidget(dw2, dw3)
         viewer.window._qt_window.tabifyDockWidget(dw3, dw4)
-        viewer.window._qt_window.tabifyDockWidget(dw4, dw_mesh)
+        viewer.window._qt_window.tabifyDockWidget(dw4, dw5)
+        viewer.window._qt_window.tabifyDockWidget(dw5, dw_mesh)
         viewer.window._qt_window.tabifyDockWidget(dw_mesh, dw_protein_loader)
         
         # Connect mesh generation completion signal to PyCurv file list refresh
