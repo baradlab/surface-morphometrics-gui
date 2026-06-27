@@ -1,0 +1,454 @@
+import copy
+import os
+import subprocess
+import threading
+from pathlib import Path
+
+from magicgui import widgets
+from qtpy.QtCore import QTimer
+from ruamel.yaml import YAML
+from qtpy.QtWidgets import (
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
+
+from ..utils.archive_utils import check_and_archive_outputs
+from ..utils.script_resolver import (
+    resolve_cli_runner,
+    CLI_MISSING_MESSAGE,
+    REFINE_MESH,
+    ACCEPT_REFINEMENT,
+    resolve_work_dir,
+    cli_work_dir,
+)
+from ..widgets.job_status import JobStatusWidget
+
+# Refinement-only outputs. Archived before a re-run and never touch the
+# canonical *.surface.vtp / *.AVV_rh*.gt graphs that pycurv produced.
+REFINE_OUTPUT_PATTERNS = [
+    '*_refined_iter*',
+    '*_profile_iter*.png',
+    '*_samples_iter*.png',
+    '*_refinement_convergence.png',
+    '*_refinement_stats.csv',
+    '*_profile_evolution.png',
+]
+
+
+class RefinementWidget(QWidget):
+    """Optional density-guided mesh refinement tab.
+
+    Refinement is the optional step between curvature (pycurv) and distances.
+    It nudges surface vertices toward the true membrane center using the
+    tomogram density, in two CLI actions driven from this tab:
+
+    1. ``morphometrics refine_mesh`` iterates over the pycurv ``.gt`` graphs in
+       the work dir, sampling density from the tomograms in ``tomo_dir`` and
+       writing ``*_refined_iter{N}.*`` surfaces plus convergence/profile plots.
+       The user inspects those plots to choose the best iteration.
+    2. ``morphometrics accept_refinement <step>`` promotes the chosen iteration
+       to be the canonical surface (backing up the original) and removes the
+       other refinement intermediates.
+
+    Like thickness, refinement needs a ``tomo_dir`` (not held by the shared
+    ExperimentManager) and the existing pycurv graphs, so this tab validates
+    both before running.
+    """
+
+    def __init__(self, experiment_manager):
+        super().__init__()
+        self.experiment_manager = experiment_manager
+        self.is_running = False
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(5, 5, 5, 5)
+        self.setLayout(main_layout)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        inner = QWidget()
+        inner_layout = QVBoxLayout()
+        inner_layout.setContentsMargins(0, 0, 0, 0)
+        inner.setLayout(inner_layout)
+        scroll.setWidget(inner)
+        main_layout.addWidget(scroll)
+
+        inner_layout.addWidget(QLabel("<b>Density-Guided Mesh Refinement</b>"))
+        inner_layout.addWidget(QLabel(
+            "Optional. Run after curvature, before distances. Refine, inspect the\n"
+            "convergence plots in the work dir, then accept the best iteration."))
+
+        # --- Tomogram directory (not held by ExperimentManager) ---
+        inner_layout.addWidget(QLabel("Tomogram Directory (raw MRCs for density sampling):"))
+        self.tomo_dir_input = widgets.FileEdit(mode='d', label='Tomogram Dir')
+        inner_layout.addWidget(self.tomo_dir_input.native)
+
+        # --- Refinement settings ---
+        settings = widgets.Container(layout='vertical', labels=True)
+        settings.native.layout().setSpacing(5)
+        settings.native.layout().setContentsMargins(3, 3, 3, 3)
+        self.iterations_input = widgets.SpinBox(
+            value=6, min=1, max=50, label='Iterations')
+        self.iterations_input.tooltip = "Number of refinement iterations."
+        self.damping_input = widgets.FloatSpinBox(
+            value=0.9, min=0.0, max=1.0, step=0.05, label='Damping Factor')
+        self.damping_input.tooltip = "Fraction of the computed impulse applied per iteration. Lower prevents oscillation."
+        self.average_radius_input = widgets.FloatSpinBox(
+            value=25.0, min=1.0, max=100.0, step=1.0, label='Average Radius (nm)')
+        self.average_radius_input.tooltip = "Radius for local averaging of density profiles. Larger = more smoothing."
+        self.max_offset_input = widgets.FloatSpinBox(
+            value=8.0, min=0.5, max=50.0, step=0.5, label='Max Total Offset (nm)')
+        self.max_offset_input.tooltip = "Maximum total displacement from the original surface. Prevents divergence."
+        self.xcorr_iterations_input = widgets.SpinBox(
+            value=3, min=0, max=50, label='Initial XCorr Iterations')
+        self.xcorr_iterations_input.tooltip = (
+            "Number of initial iterations using cross-correlation to sharpen the bilayer "
+            "before switching to dual-Gaussian fitting. 0 = Gaussian fitting throughout.")
+        self.monolayer_input = widgets.CheckBox(value=False, label='Monolayer (single Gaussian)')
+        self.monolayer_input.tooltip = "For high-defocus data where the bilayer is not resolved."
+        self.smooth_offsets_input = widgets.CheckBox(value=True, label='Smooth Offset Field')
+        self.smooth_offsets_input.tooltip = "Spatially smooth the offset field before applying it. Reduces local noise."
+        self.laplacian_input = widgets.SpinBox(
+            value=5, min=0, max=20, label='Laplacian Iterations')
+        self.laplacian_input.tooltip = "Laplacian smoothing iterations after displacement (0 = disabled)."
+        self.laplacian_lambda_input = widgets.FloatSpinBox(
+            value=0.5, min=0.0, max=1.0, step=0.05, label='Laplacian Lambda')
+        self.laplacian_lambda_input.tooltip = "Laplacian smoothing strength. Higher = more smoothing but may lose detail."
+        self.lowpass_input = widgets.FloatSpinBox(
+            value=0.0, min=0.0, max=10.0, step=0.5, label='Low-pass Sigma (nm)')
+        self.lowpass_input.tooltip = "3D Gaussian low-pass on the tomogram before sampling. 0 = disabled; try 1-3 nm for noisy data."
+        settings.extend([
+            self.iterations_input,
+            self.damping_input,
+            self.average_radius_input,
+            self.max_offset_input,
+            self.xcorr_iterations_input,
+            self.monolayer_input,
+            self.smooth_offsets_input,
+            self.laplacian_input,
+            self.laplacian_lambda_input,
+            self.lowpass_input,
+        ])
+        inner_layout.addWidget(QLabel("<b>Settings</b>"))
+        inner_layout.addWidget(settings.native)
+
+        # --- Run refinement + status ---
+        self.submit_btn = widgets.PushButton(text='Run Refinement')
+        self.submit_btn.clicked.connect(self._run_refinement)
+        inner_layout.addWidget(self.submit_btn.native)
+
+        # --- Accept an iteration (destructive: promotes one, removes the rest) ---
+        inner_layout.addWidget(QLabel("<b>Accept Iteration</b>"))
+        inner_layout.addWidget(QLabel(
+            "Promote one iteration to be the working surface (originals are backed\n"
+            "up). Inspect *_refinement_convergence.png first to pick the best one."))
+        accept = widgets.Container(layout='vertical', labels=True)
+        accept.native.layout().setSpacing(5)
+        accept.native.layout().setContentsMargins(3, 3, 3, 3)
+        self.accept_step_input = widgets.SpinBox(
+            value=1, min=1, max=50, label='Iteration to Accept')
+        accept.extend([self.accept_step_input])
+        inner_layout.addWidget(accept.native)
+        self.accept_btn = QPushButton('Accept Iteration')
+        self.accept_btn.clicked.connect(self._accept_iteration)
+        inner_layout.addWidget(self.accept_btn)
+
+        self.status = JobStatusWidget()
+        inner_layout.addWidget(self.status.native)
+        inner_layout.addStretch(1)
+
+        if hasattr(self.experiment_manager, 'config_loaded'):
+            self.experiment_manager.config_loaded.connect(self._on_config_loaded)
+            if self.experiment_manager.current_config:
+                self._on_config_loaded()
+
+    def _on_config_loaded(self):
+        try:
+            self.status.update_status('Ready')
+            self.status.update_progress(0)
+            config = self.experiment_manager.current_config or {}
+            if config.get('tomo_dir'):
+                self.tomo_dir_input.value = config['tomo_dir']
+            refine = config.get('mesh_refinement', {}) or {}
+            self.iterations_input.value = refine.get('iterations', 6)
+            self.damping_input.value = refine.get('damping_factor', 0.9)
+            density = config.get('density_sampling', config.get('thickness_measurements', {}))
+            self.average_radius_input.value = refine.get(
+                'average_radius', density.get('average_radius', 25))
+            self.max_offset_input.value = refine.get('max_total_offset', 8)
+            xcorr = refine.get('xcorr_iterations', 3)
+            # Config may carry a list of iteration numbers; the GUI exposes the
+            # "first N" form, so collapse a contiguous-from-1 list to its length.
+            self.xcorr_iterations_input.value = (
+                len(xcorr) if isinstance(xcorr, (list, tuple)) else (xcorr or 0))
+            self.monolayer_input.value = refine.get('monolayer', False)
+            self.smooth_offsets_input.value = refine.get('smooth_offsets', True)
+            self.laplacian_input.value = refine.get('laplacian_iterations', 5)
+            self.laplacian_lambda_input.value = refine.get('laplacian_lambda', 0.5)
+            self.lowpass_input.value = refine.get('lowpass_sigma', 0)
+        except Exception as e:
+            print(f"[RefinementWidget] Error in _on_config_loaded: {e}")
+
+    def _config_path(self):
+        exp_name = self.experiment_manager.experiment_name.currentText()
+        exp_dir = Path(self.experiment_manager.work_dir.value) / exp_name
+        preferred = exp_dir / f"{exp_name}_config.yml"
+        fallback = exp_dir / 'config.yml'
+        return (preferred if preferred.exists() else fallback), exp_dir
+
+    def _radius_hit(self):
+        config = self.experiment_manager.current_config or {}
+        return config.get('curvature_measurements', {}).get('radius_hit', 9)
+
+    def _update_config(self):
+        """Write tomo_dir, work_dir and the mesh_refinement block into config.yml."""
+        if not self.experiment_manager.current_config:
+            raise ValueError("Experiment configuration not loaded.")
+
+        config_path, exp_dir = self._config_path()
+
+        yaml = YAML()
+        yaml.preserve_quotes = True
+        existing = {}
+        if config_path.exists():
+            try:
+                with open(config_path, 'r') as f:
+                    existing = yaml.load(f) or {}
+            except Exception:
+                existing = {}
+        else:
+            existing = copy.deepcopy(self.experiment_manager.current_config)
+
+        # Every step shares one output dir; the CLI concatenates work_dir +
+        # basename, so it must end in a separator.
+        out_dir = resolve_work_dir(exp_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        existing['work_dir'] = cli_work_dir(out_dir)
+        existing['cores'] = self.experiment_manager.cores_input.value()
+
+        tomo_dir = str(self.tomo_dir_input.value)
+        existing['tomo_dir'] = tomo_dir + os.sep if not tomo_dir.endswith(os.sep) else tomo_dir
+
+        existing.setdefault('mesh_refinement', {})
+        existing['mesh_refinement'].update({
+            'iterations': self.iterations_input.value,
+            'damping_factor': self.damping_input.value,
+            'average_radius': self.average_radius_input.value,
+            'max_total_offset': self.max_offset_input.value,
+            # Config accepts "first N iterations" as an int.
+            'xcorr_iterations': self.xcorr_iterations_input.value,
+            'monolayer': self.monolayer_input.value,
+            'smooth_offsets': self.smooth_offsets_input.value,
+            'laplacian_iterations': self.laplacian_input.value,
+            'laplacian_lambda': self.laplacian_lambda_input.value,
+            'lowpass_sigma': self.lowpass_input.value,
+        })
+
+        with open(config_path, 'w') as f:
+            yaml.dump(existing, f)
+
+        return config_path
+
+    # ----- Run refinement -----
+
+    def _run_refinement(self):
+        if self.is_running:
+            return
+
+        tomo_dir = str(self.tomo_dir_input.value or '')
+        if not tomo_dir or not Path(tomo_dir).is_dir():
+            QMessageBox.warning(self, "No Tomogram Directory",
+                                "Select the directory containing the raw tomogram MRC files.")
+            return
+        if not list(Path(tomo_dir).glob('*.mrc')):
+            QMessageBox.warning(self, "No Tomograms", f"No .mrc files found in {tomo_dir}.")
+            return
+
+        config_path, exp_dir = self._config_path()
+        work_dir = resolve_work_dir(exp_dir)
+        radius_hit = self._radius_hit()
+        if not list(work_dir.glob(f'*.AVV_rh{radius_hit}.gt')):
+            QMessageBox.warning(
+                self, "No Curvature Graphs",
+                f"No pycurv graphs (*.AVV_rh{radius_hit}.gt) found in {work_dir}.\n"
+                "Run the Curvature step before refining the mesh.")
+            return
+
+        try:
+            config_path = self._update_config()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to update config: {e}")
+            return
+
+        runner = resolve_cli_runner()
+        if runner is None:
+            QMessageBox.critical(self, "morphometrics CLI not found", CLI_MISSING_MESSAGE)
+            print(f"[Error] {CLI_MISSING_MESSAGE}")
+            return
+
+        # Archive prior refinement outputs only; never touch the canonical
+        # pycurv graphs/surfaces that refinement reads from.
+        try:
+            if not check_and_archive_outputs(
+                self, work_dir, config_path=config_path,
+                file_patterns=REFINE_OUTPUT_PATTERNS,
+            ):
+                print("User cancelled.")
+                return
+        except Exception as e:
+            print(f"Archive check failed: {e}")
+
+        job_data = {
+            'runner': runner,
+            'config_path': config_path,
+            'iterations': self.iterations_input.value,
+        }
+        self.is_running = True
+        self.submit_btn.enabled = False
+        self.accept_btn.setEnabled(False)
+        self.status.update_status('Starting...')
+        self.status.update_progress(0)
+        threading.Thread(target=self._run_refinement_worker, args=(job_data,), daemon=True).start()
+
+    def _run_refinement_worker(self, job_data):
+        try:
+            runner = job_data['runner']
+            config_path = job_data['config_path']
+            iterations = max(1, job_data['iterations'])
+            work_dir = resolve_work_dir(Path(config_path).parent).resolve()
+
+            cmd = runner + [REFINE_MESH, str(config_path)]
+            print(f"--- Refining mesh: {' '.join(map(str, cmd))} ---")
+            self.status.update_status('Refining mesh...')
+            self.status.update_progress(5)
+
+            env = os.environ.copy()
+            env["PYTHONUNBUFFERED"] = "1"
+            process = subprocess.Popen(
+                cmd, cwd=work_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, universal_newlines=True, env=env,
+            )
+            if process.stdout is not None:
+                for line in process.stdout:
+                    line = line.rstrip()
+                    if not line:
+                        continue
+                    print(line)
+                    # refine_mesh prints "=== Iteration N/M ===" per iteration.
+                    if "=== Iteration" in line:
+                        try:
+                            n = int(line.split("Iteration", 1)[1].split("/", 1)[0])
+                            self.status.update_status(f'Iteration {n}/{iterations}...')
+                            self.status.update_progress(min(95, int(95 * n / iterations)))
+                        except (ValueError, IndexError):
+                            pass
+            return_code = process.wait()
+
+            if return_code != 0:
+                self.status.update_status('Error: refinement failed. See terminal.')
+                print("[ERROR] refine_mesh failed. Check the terminal output.")
+                return
+
+            if not list(work_dir.glob('*_refined_iter*.surface.vtp')):
+                self.status.update_status('Error: no refined surfaces produced.')
+                print("[ERROR] refine_mesh produced no *_refined_iter*.surface.vtp. "
+                      "Check that pycurv graphs (.gt) and tomogram basenames match.")
+                return
+
+            self.status.update_progress(100)
+            self.status.update_status(
+                'Refinement complete. Inspect *_refinement_convergence.png, then accept an iteration.')
+            print("===== Mesh refinement complete. =====")
+
+        except Exception as e:
+            self.status.update_status(f'Error: {e}')
+            print(f"A critical error occurred in the refinement worker: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            QTimer.singleShot(0, self._job_cleanup)
+
+    # ----- Accept an iteration -----
+
+    def _accept_iteration(self):
+        if self.is_running:
+            return
+
+        if not self.experiment_manager.current_config:
+            QMessageBox.warning(self, "No Experiment", "Load an experiment first.")
+            return
+
+        config_path, exp_dir = self._config_path()
+        if not config_path.exists():
+            QMessageBox.warning(self, "No Config", f"Config not found: {config_path}")
+            return
+
+        step = self.accept_step_input.value
+        work_dir = resolve_work_dir(exp_dir)
+        if not list(work_dir.glob(f'*_refined_iter{step}.surface.vtp')):
+            QMessageBox.warning(
+                self, "No Such Iteration",
+                f"No refined surfaces for iteration {step} found in {work_dir}.\n"
+                "Run refinement first, or pick an iteration that was produced.")
+            return
+
+        confirm = QMessageBox.question(
+            self, "Accept Iteration",
+            f"Promote iteration {step} to be the working surface?\n\n"
+            "The original surfaces are backed up (*.orig.bak), but the other "
+            "refinement iterations and intermediates will be removed. This cannot "
+            "be undone from the GUI.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if confirm != QMessageBox.Yes:
+            return
+
+        runner = resolve_cli_runner()
+        if runner is None:
+            QMessageBox.critical(self, "morphometrics CLI not found", CLI_MISSING_MESSAGE)
+            return
+
+        job_data = {'runner': runner, 'config_path': config_path, 'step': step}
+        self.is_running = True
+        self.submit_btn.enabled = False
+        self.accept_btn.setEnabled(False)
+        self.status.update_status(f'Accepting iteration {step}...')
+        threading.Thread(target=self._accept_worker, args=(job_data,), daemon=True).start()
+
+    def _accept_worker(self, job_data):
+        try:
+            runner = job_data['runner']
+            config_path = job_data['config_path']
+            step = job_data['step']
+            work_dir = resolve_work_dir(Path(config_path).parent).resolve()
+
+            cmd = runner + [ACCEPT_REFINEMENT, str(config_path), str(step)]
+            print(f"--- Accepting refinement: {' '.join(map(str, cmd))} ---")
+            try:
+                subprocess.run(cmd, cwd=work_dir, check=True, text=True)
+            except subprocess.CalledProcessError:
+                self.status.update_status('Error: accept_refinement failed. See terminal.')
+                print("[ERROR] accept_refinement failed. Check the terminal output.")
+                return
+
+            self.status.update_status(
+                f'Accepted iteration {step}. If it was a lightweight (xcorr) iteration, '
+                're-run Curvature before distances.')
+            print(f"===== Accepted refinement iteration {step}. =====")
+
+        except Exception as e:
+            self.status.update_status(f'Error: {e}')
+            print(f"A critical error occurred while accepting refinement: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            QTimer.singleShot(0, self._job_cleanup)
+
+    def _job_cleanup(self):
+        self.submit_btn.enabled = True
+        self.accept_btn.setEnabled(True)
+        self.is_running = False
