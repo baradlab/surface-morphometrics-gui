@@ -302,7 +302,14 @@ class DistanceOrientationWidget(QWidget):
              archive_config_path = exp_dir / f"{exp_name}_config.yml"
              archive_dir = resolve_work_dir(exp_dir)
 
-             if not check_and_archive_outputs(self.native, archive_dir, config_path=archive_config_path, file_patterns=['*.csv', '*.svg', '*.png'], exclude_patterns=['*AVV*', '*VV*', '*.gt', '*_runtimes.csv']):
+             # Excludes cover pycurv outputs (AVV/VV/.gt) and mesh-refinement
+             # artifacts, which live in the same results/ dir but are not
+             # distance-measurement outputs.
+             refinement_excludes = [
+                 '*_refinement_*', '*_profile_evolution*',
+                 '*_profile_iter*', '*_samples_iter*', '*lightweight*',
+             ]
+             if not check_and_archive_outputs(self.native, archive_dir, config_path=archive_config_path, file_patterns=['*.csv', '*.svg', '*.png'], exclude_patterns=['*AVV*', '*VV*', '*.gt', '*_runtimes.csv'] + refinement_excludes):
                  return
         except Exception as e:
              print(f"Archive check failed: {e}")
