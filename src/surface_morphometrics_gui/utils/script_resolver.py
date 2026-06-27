@@ -15,6 +15,13 @@ from pathlib import Path
 MAKE_MESHES = "make_meshes"
 PYCURV = "pycurv"
 DISTANCES_ORIENTATIONS = "distances_orientations"
+# Thickness is two steps: sample tomogram density along normals, then fit it.
+SAMPLE_DENSITY = "sample_density"
+MEASURE_THICKNESS = "measure_thickness"
+# Optional density-guided mesh refinement (after pycurv, before distances):
+# refine_mesh iterates, then accept_refinement commits a chosen iteration.
+REFINE_MESH = "refine_mesh"
+ACCEPT_REFINEMENT = "accept_refinement"
 
 
 def results_dir(work_dir_field, exp_name):
