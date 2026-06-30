@@ -40,6 +40,7 @@ To set up your development environment:
 
 5. **Run the GUI**
    ```bash
+   cd src
    python main.py
    ```
 
