@@ -32,6 +32,15 @@ dependencies = [
     "libigl<2.5.0",
 ]
 
+[project.optional-dependencies]
+# Test/dev tooling. PyQt5 is included so the suite has a Qt binding outside the
+# conda `morphometrics` env (e.g. in CI / a plain virtualenv).
+test = [
+    "pytest",
+    "pytest-qt",
+    "PyQt5",
+]
+
 [project.scripts]
 surface-morphometrics-gui = "surface_morphometrics_gui.main:main"
 

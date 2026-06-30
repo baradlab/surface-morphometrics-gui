@@ -181,12 +181,14 @@ class TestBug8_ClearOnNegativeIndex:
                 em.data_dir.value = "/user/data"
                 em.cores_input.setValue(8)
 
-                # Simulate programmatic clear (index goes to -1)
+                # Simulate programmatic clear (index goes to -1); this fires
+                # _on_experiment_selected via the currentIndexChanged signal.
                 em.experiment_name.setCurrentIndex(-1)
-                # _on_experiment_selected fires via signal
 
-                # After fix, user values should be preserved during programmatic clears
-                # (The fix should guard against clearing during non-user-initiated changes)
+                # The fix guards on currentIndex() >= 0, so a negative index
+                # (non-user-initiated change) must not wipe the user's values.
+                assert str(em.data_dir.value) == "/user/data"
+                assert em.cores_input.value() == 8
 
 
 class TestBug10_TimeSleep:
