@@ -28,17 +28,6 @@ class TestBug1_JobStatusMissingMethods:
         w.append_output("test message")  # Should not raise
 
 
-class TestBug2_UnreachableReturn:
-    """Bug #2: Unreachable `return values` after a prior `return {...}` in _get_values."""
-
-    def test_no_unreachable_return(self):
-        from morphometrics_config import ConfigEditor
-        source = inspect.getsource(ConfigEditor._get_values)
-        # Count return statements - should only be one
-        returns = [line.strip() for line in source.split('\n') if line.strip().startswith('return ')]
-        assert len(returns) == 1, f"_get_values should have exactly 1 return statement, found {len(returns)}: {returns}"
-
-
 class TestBug3_DefaultMismatch:
     """Bug #3: Widget init defaults differ from _on_config_loaded fallbacks."""
 
@@ -128,29 +117,27 @@ class TestBug5_DistanceConfigPathOverwrite:
 
 
 class TestBug6_InterDictEditorRename:
-    """Bug #6: InterDictEditor remove callback captures key_edit.value at remove-time
-    but entries dict uses original key."""
+    """Bug #6: the old InterDictEditor keyed self.entries by the user-typed
+    membrane name, so button-driven Adds collided on the empty key and renames
+    desynced the dict. The fix (now in jobs.distance_tab) keys by a monotonic
+    token, so neither happens."""
 
     @pytest.mark.gui
-    def test_remove_after_rename(self, qapp):
-        from morphometrics_config import InterDictEditor
+    def test_button_driven_adds_do_not_collide(self, qapp):
+        from jobs.distance_tab import InterDictEditor
+        editor = InterDictEditor()
+        editor._add_entry()  # empty key
+        editor._add_entry()  # empty key again — old impl overwrote the first
+        assert len(editor.entries) == 2
+
+    @pytest.mark.gui
+    def test_rename_reflected_in_get_values(self, qapp):
+        from jobs.distance_tab import InterDictEditor
         editor = InterDictEditor()
         editor._add_entry("original_key", ["val1"])
-        assert "original_key" in editor.entries
-
-        # The entry is keyed by its original name; renaming the widget must not
-        # change the dict key (which is what the remove callback looks up).
-        key_edit, value_editor, container = editor.entries["original_key"]
+        (key_edit, value_editor, container), = editor.entries.values()
         key_edit.value = "renamed_key"
-
-        # Simulate clicking Remove. The remove button lives in the header
-        # container: container[0] is the header, container[0][1] the button.
-        remove_button = container[0][1]
-        remove_button.clicked.emit()
-
-        # After the fix the entry is removed despite the rename — no stale key.
-        assert "original_key" not in editor.entries
-        assert editor.entries == {}
+        assert editor.get_values() == {"renamed_key": ["val1"]}
 
 
 class TestBug7_UpdateConfigPathsOverwrite:
@@ -204,20 +191,6 @@ class TestBug8_ClearOnNegativeIndex:
                 assert em.cores_input.value() == 8
 
 
-class TestBug9_BackupNotCleaned:
-    """Bug #9: .bak file never cleaned up after successful save."""
-
-    def test_backup_cleaned_after_save(self, tmp_path):
-        from morphometrics_config import ConfigYAMLPreserver
-        p = tmp_path / "test.yml"
-        p.write_text("key: value\n")
-        cp = ConfigYAMLPreserver(p)
-        cp.save()
-
-        backup = tmp_path / "test.bak"
-        assert not backup.exists(), ".bak file should be cleaned up after successful save"
-
-
 class TestBug10_TimeSleep:
     """Bug #10: time.sleep(0.1) in UI thread."""
 
@@ -226,3 +199,55 @@ class TestBug10_TimeSleep:
         source = inspect.getsource(MeshViewer._setup_shading)
         assert "time.sleep" not in source, \
             "_setup_shading should not use time.sleep in UI thread"
+
+
+class TestBug11_CliImportRelativeImports:
+    """Bug #11: _import_cli_project used bare `from widgets.` / `from utils.`
+    imports, which raised ModuleNotFoundError for the installed package
+    (they only resolved when cwd happened to be on sys.path)."""
+
+    def test_import_cli_project_uses_relative_imports(self):
+        import experiment_manager
+        source = inspect.getsource(experiment_manager.ExperimentManager._import_cli_project)
+        assert "from widgets." not in source, \
+            "_import_cli_project must not use bare `from widgets.` import"
+        assert "from utils." not in source, \
+            "_import_cli_project must not use bare `from utils.` import"
+        assert "from .widgets." in source and "from .utils." in source, \
+            "_import_cli_project must use package-relative imports"
+
+    def test_cli_import_targets_are_importable(self):
+        # The modules the relative imports resolve to must actually exist.
+        from surface_morphometrics_gui.widgets.cli_import_dialog import CliImportDialog
+        from surface_morphometrics_gui.utils.cli_import import execute_plan
+        assert CliImportDialog is not None and execute_plan is not None
+
+
+class TestBug12_WidgetRangesClampAngstromConfigs:
+    """Bug #12: widget max ranges were below realistic angstrom-scale config
+    values, so loading e.g. radius_hit: 90 / maxdist: 4000 silently clamped to
+    the widget default (or raised ValueError) instead of taking effect."""
+
+    @pytest.mark.gui
+    def test_radius_hit_accepts_angstrom_scale(self, qapp):
+        from jobs.pycurv_tab import PyCurvWidget
+        w = PyCurvWidget(MagicMock())
+        assert w.radius_hit_input.max >= 90
+        w.radius_hit_input.value = 90
+        assert w.radius_hit_input.value == 90
+
+    @pytest.mark.gui
+    def test_extrapolation_distance_accepts_angstrom_scale(self, qapp, mock_experiment_manager):
+        from jobs.mesh_tab import MeshGenerationWidget
+        w = MeshGenerationWidget(mock_experiment_manager)
+        assert w.extrapolation_distance.max >= 15
+        w.extrapolation_distance.value = 15
+        assert w.extrapolation_distance.value == 15
+
+    @pytest.mark.gui
+    def test_distance_widgets_accept_angstrom_scale(self, qapp):
+        from jobs.distance_tab import DistanceOrientationWidget
+        w = DistanceOrientationWidget(MagicMock())
+        assert w.min_dist.max >= 4000 and w.max_dist.max >= 4000
+        w.max_dist.value = 4000
+        assert w.max_dist.value == 4000

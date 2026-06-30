@@ -44,16 +44,16 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-          cache-dependency-path: requirements-dev.txt
+          cache-dependency-path: pyproject.toml
 
       # System libraries needed by PyQt5 / napari / VTK in a headless runner.
       - name: Install Qt system dependencies
         uses: tlambert03/setup-qt-libs@v1
 
-      - name: Install Python dependencies
+      - name: Install package and test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+          pip install -e ".[test]"
 
       - name: Run test suite
         run: pytest tests/ -v

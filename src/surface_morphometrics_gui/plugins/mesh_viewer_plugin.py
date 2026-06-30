@@ -1,4 +1,4 @@
-from plugins.mesh_viewer import MeshViewer
+from .mesh_viewer import MeshViewer
 
 
 class MeshViewerPlugin:

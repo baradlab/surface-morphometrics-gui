@@ -1,15 +1,20 @@
 from pathlib import Path
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QLabel, QHBoxLayout, QComboBox, QMessageBox, QSpinBox, QDialog,
-    QCompleter, QSizePolicy, QScrollArea, QFileDialog, QInputDialog
+    QCompleter, QSizePolicy, QScrollArea, QFileDialog
 )
 from qtpy.QtCore import Qt, QTimer, QStringListModel, Signal  # type: ignore
 from magicgui import widgets
 from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
+import logging
 import matplotlib.pyplot as plt
 import os
 import shutil
 import napari
+from .utils.script_resolver import get_seg_dir, resolve_work_dir, cli_work_dir
+
+logger = logging.getLogger(__name__)
 
 class SegmentationEntry(widgets.Container):
     """A single segmentation entry with label and value fields"""
@@ -146,10 +151,6 @@ class ExperimentManager(QWidget):
     def __init__(self, viewer):
         super().__init__()
         self.viewer = viewer
-        self.config_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)),
-            'config.yml'
-        )
         self.current_config = {}
         # Set size policies for better resizing
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
@@ -387,9 +388,12 @@ class ExperimentManager(QWidget):
         if not work_dir.exists():
             return
         
+        # Recognize both GUI experiments (<name>_config.yml) and raw CLI
+        # projects (plain config.yml from `morphometrics new_config`) so a
+        # CLI output folder dropped under the work dir can be resumed.
         existing_experiments = [
-            d.name for d in work_dir.iterdir() 
-            if d.is_dir() and list(d.glob('*_config.yml'))
+            d.name for d in work_dir.iterdir()
+            if d.is_dir() and (list(d.glob('*_config.yml')) or (d / 'config.yml').is_file())
         ]
         
         if existing_experiments:
@@ -449,6 +453,9 @@ class ExperimentManager(QWidget):
 
             # Update current config
             self.current_config = existing_config
+            # Reflect where this experiment's files actually live (results/ or
+            # the flat exp_dir for a raw CLI project).
+            self.current_config['work_dir'] = cli_work_dir(resolve_work_dir(exp_dir))
 
             # Block config_template.changed while restoring UI so that
             # _handle_config_template_selection does not re-load the
@@ -456,8 +463,8 @@ class ExperimentManager(QWidget):
             self.config_template.changed.disconnect(self._handle_config_template_selection)
             try:
                 # Update UI with loaded config values
-                if 'data_dir' in existing_config:
-                    self.data_dir.value = existing_config['data_dir']
+                if get_seg_dir(existing_config):
+                    self.data_dir.value = get_seg_dir(existing_config)
                 # Load the original config template if available
                 if 'config_template' in existing_config:
                     self.config_template.value = existing_config['config_template']
@@ -498,6 +505,9 @@ class ExperimentManager(QWidget):
                 with open(file_path, 'r') as f:
                     self.current_config = yaml.load(f)
                 self._load_config(file_path)
+                # Populate the job tabs (distance pairs, pycurv/mesh settings)
+                # from the selected template — not just on load/resume.
+                self.config_loaded.emit()
             except Exception as e:
                 QMessageBox.critical(
                     self,
@@ -521,10 +531,16 @@ class ExperimentManager(QWidget):
             if 'segmentation_values' in self.current_config:
                 self.segmentation_container._set_values(self.current_config['segmentation_values'])
             
-            # Only populate data_dir from the template if the user hasn't
-            # already set one — avoids overwriting a real path with an example.
-            if 'data_dir' in self.current_config and not self.data_dir.value:
-                self.data_dir.value = self.current_config['data_dir']
+            # Only populate the segmentation dir from the template if the user
+            # hasn't already set one — avoids overwriting a real path with an example.
+            if get_seg_dir(self.current_config) and not self.data_dir.value:
+                self.data_dir.value = get_seg_dir(self.current_config)
+
+            # Honor the template's exp_name: pre-fill the experiment name so the
+            # experiment folder and config get named after it. Only when the
+            # user hasn't already typed/selected a name — never clobber input.
+            if self.current_config.get('exp_name') and not self.experiment_name.currentText().strip():
+                self.experiment_name.setCurrentText(self.current_config['exp_name'])
 
     def _update_config_paths(self):
         """Update paths in the config when directories are selected.
@@ -534,10 +550,11 @@ class ExperimentManager(QWidget):
         """
         if self.current_config:
             if self.data_dir.value:
-                self.current_config['data_dir'] = str(self.data_dir.value)
-
-            if self.work_dir.value:
-                self.current_config['work_dir'] = str(self.work_dir.value)
+                self.current_config['seg_dir'] = str(self.data_dir.value)
+            # Note: work_dir is owned by the job tabs / resume logic, which
+            # resolve it to the experiment's output dir. The work_dir field
+            # here is the PARENT of all experiments, so it must NOT be written
+            # into the config as work_dir.
 
         self._check_start_button_state()
 
@@ -667,7 +684,12 @@ class ExperimentManager(QWidget):
             # Make sure we use the correct paths
 
             self._update_config_paths()
-            
+
+            # Point work_dir at this experiment's actual output directory
+            # (results/ if organized, the flat exp_dir for a raw CLI project)
+            # so the config the tabs read matches where the files really are.
+            self.current_config['work_dir'] = cli_work_dir(resolve_work_dir(exp_dir))
+
             # Emit signal that config was loaded - this will update job tabs
             self.config_loaded.emit()
             
@@ -685,6 +707,22 @@ class ExperimentManager(QWidget):
                                 f'Failed to resume experiment: {str(e)}')
 
 
+    def _load_config_template(self):
+        """Load the configured config template YAML.
+
+        Returns (config_data, template_path). When no template is configured
+        or the file cannot be read, returns (None, None).
+        """
+        if not self.config_template.value:
+            return None, None
+        template_path = Path(self.config_template.value)
+        if not template_path.is_file():
+            return None, None
+        yaml = YAML()
+        yaml.preserve_quotes = True
+        with open(template_path, 'r') as f:
+            return yaml.load(f), template_path
+
     def _create_new_experiment(self):
         """Create a new experiment by copying config template and setting up directories"""
         if not all([
@@ -701,25 +739,27 @@ class ExperimentManager(QWidget):
             experiment_dir = Path(self.work_dir.value) / experiment_name
             experiment_dir.mkdir(parents=True, exist_ok=True)
 
-            # Copy the config template to experiment directory with new name
-            config_template_path = Path(self.config_template.value)
             new_config_path = experiment_dir / f"{experiment_name}_config.yml"
 
-            # Read the config template
-            yaml = YAML()
-            yaml.preserve_quotes = True
-            with open(config_template_path, 'r') as f:
-                config_data = yaml.load(f)
+            # Every pipeline step reads/writes the experiment's output dir
+            # (results/ for a fresh experiment).
+            meshes_dir = resolve_work_dir(experiment_dir)
+            meshes_dir.mkdir(parents=True, exist_ok=True)
+
+            config_data, config_template_path = self._load_config_template()
 
             # Update only the UNIVERSAL section
-            config_data['data_dir'] = str(self.data_dir.value)
-            config_data['work_dir'] = str(experiment_dir)
+            config_data['seg_dir'] = str(self.data_dir.value)  # segmentation MRC directory (CLI key)
+            config_data.pop('data_dir', None)  # drop legacy key so the CLI doesn't warn
+            config_data['work_dir'] = cli_work_dir(meshes_dir)
             config_data['exp_name'] = experiment_name  # Add experiment name to config
             config_data['cores'] = self.cores_input.value()  # Add cores to config
             config_data['segmentation_values'] = self.segmentation_container.get_values()  # Add segmentation values to config
-            config_data['script_location'] = str(config_template_path.parent) # Add script location to config
+            config_data['config_template'] = str(config_template_path) # Remember template for resume
 
             # Save the modified config to the new location
+            yaml = YAML()
+            yaml.preserve_quotes = True
             with open(new_config_path, 'w') as f:
                 yaml.dump(config_data, f)
 
@@ -740,7 +780,7 @@ class ExperimentManager(QWidget):
         """Update UI state from loaded config"""
         if self.current_config:
             self.work_dir.value = self.current_config['work_dir']
-            self.data_dir.value = self.current_config['data_dir']
+            self.data_dir.value = get_seg_dir(self.current_config)
             self.config_template.value = self.current_config['config_template']
             self.cores_input.setValue(self.current_config['cores'])
             self.segmentation_container._set_values(self.current_config['segmentation_values'])
@@ -754,159 +794,96 @@ class ExperimentManager(QWidget):
         self.submit_button.setText('Start New Experiment')
 
     def _import_cli_project(self):
-        """Import a CLI output directory into GUI-compatible experiment structure.
+        """Adopt an existing CLI output directory as a GUI experiment in place.
 
-        Guided multi-step flow:
-        1. Select CLI output directory (containing .vtp/.csv/.ply files)
-        2. Optionally select a config .yml file (may live elsewhere)
-        3. Enter experiment name
-        4. Confirm destination and copy count
-        5. Copy files and create/augment config
-        6. Refresh UI
-
-        Files are COPIED (not moved) so the original directory is left untouched.
+        Opens CliImportDialog. On accept, executes the plan: moves any flat
+        result files into a `results/` subdir of the source, writes the
+        experiment config atomically at the top of the source dir, and
+        refreshes the panel — the source directory IS the new experiment
+        directory. No files are copied or duplicated. The GUI's work_dir
+        is set to the source's parent so the experiment dropdown picks
+        up the new experiment.
         """
-        # Step 1: Select CLI output directory
-        cli_dir = QFileDialog.getExistingDirectory(
-            self, "Select CLI Output Directory",
-            "",
-            QFileDialog.ShowDirsOnly
+        from .widgets.cli_import_dialog import CliImportDialog
+        from .utils.cli_import import execute_plan
+
+        template_data, template_path = self._load_config_template()
+        dialog = CliImportDialog(
+            self,
+            template_data=template_data,
+            template_path=template_path,
+            cores=self.cores_input.value(),
         )
-        if not cli_dir:
-            return
-        cli_path = Path(cli_dir)
-
-        # Step 2: Validate — must contain result files
-        copy_extensions = {'.vtp', '.ply', '.xyz', '.csv', '.gt', '.log', '.svg', '.png'}
-        files_to_copy = [f for f in cli_path.iterdir() if f.is_file() and f.suffix in copy_extensions]
-
-        if not files_to_copy:
-            QMessageBox.warning(
-                self, "Invalid Directory",
-                "The selected directory does not contain any recognizable CLI output files.\n"
-                "Expected to find .vtp, .csv, .ply, or similar result files."
-            )
+        if dialog.exec_() != QDialog.Accepted or dialog.plan is None:
             return
 
-        # Step 3: Ask about config file (separate picker since CLI configs live anywhere)
-        has_config = QMessageBox.question(
-            self, "Config File",
-            "Do you have a config .yml file for this project?\n\n"
-            "(CLI config files can be in a different location than the output.)",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes
-        )
+        plan = dialog.plan
 
-        config_file = None
-        config_data = None
-        if has_config == QMessageBox.Yes:
-            config_path_str, _ = QFileDialog.getOpenFileName(
-                self, "Select Config File",
-                str(cli_path),
-                "YAML files (*.yml *.yaml)"
-            )
-            if config_path_str:
-                config_file = Path(config_path_str)
-                yaml = YAML()
-                yaml.preserve_quotes = True
-                try:
-                    with open(config_file, 'r') as f:
-                        config_data = yaml.load(f) or {}
-                except Exception as e:
-                    QMessageBox.warning(
-                        self, "Config Read Error",
-                        f"Could not read config file:\n{e}\n\nProceeding without config."
-                    )
-                    config_file = None
-                    config_data = None
-
-        # Step 4: Enter experiment name
-        default_name = cli_path.name
-        exp_name, ok = QInputDialog.getText(
-            self, "Experiment Name",
-            "Enter a name for the imported experiment:",
-            text=default_name
-        )
-        if not ok or not exp_name.strip():
-            return
-        exp_name = exp_name.strip()
-
-        # Step 5: Determine work_dir (use GUI widget value, or fall back to parent of CLI dir)
-        if self.work_dir.value:
-            work_dir = Path(self.work_dir.value)
-        else:
-            work_dir = cli_path.parent
-            self.work_dir.value = str(work_dir)
-
-        exp_dir = work_dir / exp_name
-        results_dir = exp_dir / "results"
-        dest_config_path = exp_dir / f"{exp_name}_config.yml"
-
-        # Step 6: Show confirmation
-        config_source = str(config_file) if config_file else "will be created from scratch"
-        confirm = QMessageBox.question(
-            self, "Confirm Import",
-            f"Will copy {len(files_to_copy)} result file(s) to:\n"
-            f"  {results_dir}\n\n"
-            f"Config source: {config_source}\n"
-            f"Config will be saved at:\n"
-            f"  {dest_config_path}\n\n"
-            f"Original files will NOT be modified.\n\n"
-            f"Continue?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes
-        )
-        if confirm != QMessageBox.Yes:
-            return
-
-        # Step 7: Create structure and copy files
         try:
-            results_dir.mkdir(parents=True, exist_ok=True)
-
-            for f in files_to_copy:
-                dest = results_dir / f.name
-                shutil.copy2(str(f), str(dest))
-
-            # Build config: augment existing or create minimal
-            yaml = YAML()
-            yaml.preserve_quotes = True
-
-            if config_data is not None:
-                # Preserve all CLI fields, override GUI-required ones
-                config_data['work_dir'] = str(exp_dir)
-                config_data['exp_name'] = exp_name
-                config_data['cores'] = self.cores_input.value()
-            else:
-                config_data = {
-                    'work_dir': str(exp_dir),
-                    'exp_name': exp_name,
-                    'cores': self.cores_input.value(),
-                }
-
-            with open(dest_config_path, 'w') as f:
-                yaml.dump(config_data, f)
-
-            # Step 8: Update UI from imported config
-            if 'data_dir' in config_data:
-                self.data_dir.value = config_data['data_dir']
-            if 'segmentation_values' in config_data:
-                self.segmentation_container._set_values(config_data['segmentation_values'])
-
-            # Refresh experiment dropdown and select imported experiment
-            self._update_experiment_names()
-            idx = self.experiment_name.findText(exp_name)
-            if idx >= 0:
-                self.experiment_name.setCurrentIndex(idx)
-
-            QMessageBox.information(
-                self, "Import Successful",
-                f"CLI project imported as experiment '{exp_name}'.\n"
-                f"Files copied to: {results_dir}\n\n"
-                f"Your original files in:\n  {cli_path}\nare unchanged."
+            result = execute_plan(plan)
+        except PermissionError as e:
+            logger.exception("Permission error during CLI import")
+            QMessageBox.critical(
+                self, "Permission Denied",
+                f"The OS refused access while writing to:\n  {plan.exp_dir}\n\n"
+                f"Check folder permissions and try again.\n\nDetails: {e}"
             )
-
+            return
+        except OSError as e:
+            logger.exception("OS error during CLI import")
+            QMessageBox.critical(
+                self, "Filesystem Error",
+                f"A filesystem error occurred during import:\n  {e}\n\n"
+                f"Common causes: out of disk space, read-only mount, broken symlink."
+            )
+            return
+        except YAMLError as e:
+            logger.exception("YAML error during CLI import")
+            QMessageBox.critical(
+                self, "Config Write Error",
+                f"Failed to write the experiment config:\n{e}"
+            )
+            return
         except Exception as e:
+            logger.exception("Unexpected error during CLI import")
             QMessageBox.critical(
                 self, "Import Error",
-                f"Failed to import CLI project:\n{str(e)}"
+                f"Unexpected failure during import. See logs for full traceback.\n\n"
+                f"{type(e).__name__}: {e}"
+            )
+            return
+
+        # Point work_dir at the source's parent so the dropdown finds it.
+        self.work_dir.value = str(plan.exp_dir.parent)
+        if get_seg_dir(plan.config_to_write):
+            self.data_dir.value = get_seg_dir(plan.config_to_write)
+        if 'segmentation_values' in plan.config_to_write:
+            self.segmentation_container._set_values(
+                plan.config_to_write['segmentation_values']
+            )
+        self._update_experiment_names()
+        idx = self.experiment_name.findText(plan.exp_name)
+        if idx >= 0:
+            self.experiment_name.setCurrentIndex(idx)
+
+        if result.failed_moves:
+            detail = "\n".join(f"  {s.name}: {msg}" for s, msg in result.failed_moves[:5])
+            more = f"\n(+{len(result.failed_moves) - 5} more)" if len(result.failed_moves) > 5 else ""
+            QMessageBox.warning(
+                self, "Adopted With Errors",
+                f"Adopted '{plan.exp_name}' but {len(result.failed_moves)} file(s) "
+                f"could not be moved into results/:\n{detail}{more}\n\n"
+                f"Config saved to: {plan.dest_config_path}"
+            )
+        else:
+            move_summary = (
+                f"{result.moved} file(s) moved into results/."
+                if result.moved else "Files were already organized; no moves were needed."
+            )
+            QMessageBox.information(
+                self, "Imported",
+                f"Adopted '{plan.exp_name}' as a GUI experiment in place.\n"
+                f"{move_summary}\n\n"
+                f"Experiment dir: {plan.exp_dir}\n"
+                f"Config: {plan.dest_config_path}"
             )

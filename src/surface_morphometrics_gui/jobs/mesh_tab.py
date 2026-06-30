@@ -1,15 +1,21 @@
 from pathlib import Path
-import re
 import subprocess
 import sys
 import os
 from magicgui import widgets
-from widgets.job_status import JobStatusWidget
+from ..widgets.job_status import JobStatusWidget
 from ruamel.yaml import YAML
 from qtpy.QtCore import QTimer, Signal, QObject
 from qtpy.QtWidgets import QWidget, QMessageBox, QScrollArea, QVBoxLayout
 import threading
-from utils.archive_utils import check_and_archive_outputs
+from ..utils.archive_utils import check_and_archive_outputs
+from ..utils.script_resolver import (
+    resolve_cli_runner,
+    CLI_MISSING_MESSAGE,
+    MAKE_MESHES,
+    resolve_work_dir,
+    cli_work_dir,
+)
 
 class MeshGenerationWidget(QWidget):
     """Widget for surface mesh generation settings"""
@@ -49,9 +55,10 @@ class MeshGenerationWidget(QWidget):
         self.angstroms = widgets.CheckBox(value=False, label='Angstrom Scaling')
         self.ultrafine = widgets.CheckBox(value=True, label='Ultrafine Surface (High Quality, Slow)')
         self.target_area = widgets.FloatSpinBox(value=1.0, min=0.1, max=100.0, step=0.1, label='Target Triangle Area')
+        self.isotropic_remesh = widgets.CheckBox(value=False, label='Isotropic Remesh')
         self.simplify = widgets.CheckBox(value=False, label='Simplify Surface')
         self.max_triangles = widgets.SpinBox(value=300000, min=1000, max=1000000, label='Max Triangles')
-        self.extrapolation_distance = widgets.FloatSpinBox(value=1.5, min=0.1, max=10.0, step=0.1, label='Extrapolation Distance')
+        self.extrapolation_distance = widgets.FloatSpinBox(value=1.5, min=0.1, max=500.0, step=0.1, label='Extrapolation Distance')
         self.octree_depth = widgets.SpinBox(value=7, min=1, max=15, label='Octree Depth')
         self.point_weight = widgets.FloatSpinBox(value=0.7, min=0.1, max=1.0, step=0.1, label='Point Weight')
         self.neighbor_count = widgets.SpinBox(value=400, min=10, max=1000, label='Neighbor Count')
@@ -62,6 +69,7 @@ class MeshGenerationWidget(QWidget):
             self.angstroms,
             self.ultrafine,
             self.target_area,
+            self.isotropic_remesh,
             self.simplify,
             self.max_triangles,
             self.extrapolation_distance,
@@ -110,8 +118,9 @@ class MeshGenerationWidget(QWidget):
             self.angstroms.value = mesh_cfg.get('angstroms', False)
             self.ultrafine.value = mesh_cfg.get('ultrafine', True)
             self.target_area.value = mesh_cfg.get('target_area', 1.0)
+            self.isotropic_remesh.value = mesh_cfg.get('isotropic_remesh', False)
             self.simplify.value = mesh_cfg.get('simplify', False)
-            self.max_triangles.value = mesh_cfg.get('max_triangles', 300000)
+            self.max_triangles.value = mesh_cfg.get('simplify_max_triangles', mesh_cfg.get('max_triangles', 300000))
             self.extrapolation_distance.value = mesh_cfg.get('extrapolation_distance', 1.5)
             self.octree_depth.value = mesh_cfg.get('octree_depth', 7)
             self.point_weight.value = mesh_cfg.get('point_weight', 0.7)
@@ -124,7 +133,7 @@ class MeshGenerationWidget(QWidget):
         except Exception as e:
             print(f'[MeshTab] Could not determine experiment directory: {e}')
         if exp_dir and exp_dir.exists():
-            meshes_dir = exp_dir / 'results'
+            meshes_dir = resolve_work_dir(exp_dir)
             mesh_files = list(meshes_dir.glob('*.ply')) + list(meshes_dir.glob('*.surface.vtp')) + list(meshes_dir.glob('*.xyz'))
             if mesh_files:
                 self.status.update_status('Completed')
@@ -145,31 +154,37 @@ class MeshGenerationWidget(QWidget):
             exp_dir = Path(self.experiment_manager.work_dir.value) / self.experiment_manager.experiment_name.currentText()
             config_path = exp_dir / f"{self.experiment_manager.experiment_name.currentText()}_config.yml"
             
-            # Create meshes directory
-            meshes_dir = exp_dir / 'results'
-            meshes_dir.mkdir(exist_ok=True)
-        
+            # The directory every step shares (results/ for GUI-organized or
+            # fresh experiments; the flat exp_dir for an adopted CLI project).
+            meshes_dir = resolve_work_dir(exp_dir)
+            meshes_dir.mkdir(parents=True, exist_ok=True)
+
             if not config_path.exists():
                 raise FileNotFoundError(f"Config file not found: {config_path}")
-        
+
             # Load existing config
             yaml = YAML()
             with open(config_path, 'r') as f:
                 config = yaml.load(f)
 
-            # Update surface generation settings and output dir
+            # Point the CLI at results/ so meshes land there directly (the CLI
+            # builds output paths as work_dir + basename, so a trailing
+            # separator is required).
+            config['work_dir'] = cli_work_dir(meshes_dir)
+
+            # Update surface generation settings
             config['surface_generation'] = {
                 'angstroms': self.angstroms.value,
                 'ultrafine': self.ultrafine.value,
                 'target_area': self.target_area.value,
+                'isotropic_remesh': self.isotropic_remesh.value,
                 'simplify': self.simplify.value,
-                'max_triangles': self.max_triangles.value,
+                'simplify_max_triangles': self.max_triangles.value,
                 'extrapolation_distance': self.extrapolation_distance.value,
                 'octree_depth': self.octree_depth.value,
                 'point_weight': self.point_weight.value,
                 'neighbor_count': self.neighbor_count.value,
                 'smoothing_iterations': self.smoothing_iterations.value,
-                'output_dir': str(meshes_dir)  # Pass to script
             }
 
             # Save config
@@ -194,31 +209,25 @@ class MeshGenerationWidget(QWidget):
             QMessageBox.critical(self, "Error", f"Failed to update config: {e}")
             return
 
-        # Read script_location from the now-updated config file on disk
-        script_location = None
-        try:
-            yaml_reader = YAML(typ='safe')
-            with open(config_path, 'r') as f:
-                disk_config = yaml_reader.load(f)
-            script_location = disk_config.get('script_location')
-        except Exception as e:
-            print(f"[MeshTab] Error reading script_location from config: {e}")
+        # Resolve the morphometrics CLI (installed package), not a loose script.
+        runner = resolve_cli_runner()
+        if runner is None:
+            QMessageBox.critical(self, "morphometrics CLI not found", CLI_MISSING_MESSAGE)
+            print(f"[Error] {CLI_MISSING_MESSAGE}")
+            return
 
-        script_path = None
-        if script_location:
-             script_path = Path(script_location) / 'segmentation_to_meshes.py'
-
-        if not script_path or not script_path.exists():
-            error_msg = (
-                "Script 'segmentation_to_meshes.py' not found.\n\n"
-                "Please make sure to place the config file you are using as a template "
-                "in the Surface Morphometrics directory.\n\n"
-                "If it is already placed there, please check the 'script_location' path "
-                "in the experiment-specific config file.\n\n"
-                f"Checked location: {script_path if script_path else 'Not defined'}"
-            )
-            QMessageBox.critical(self, "Script Not Found", error_msg)
-            print(f"[Error] {error_msg}")
+        # Fail fast if there are no segmentations to mesh — otherwise the CLI
+        # runs, finds nothing, and exits 0, leaving the user with an empty
+        # results/ and no idea why.
+        seg_dir = self.experiment_manager.data_dir.value
+        if not seg_dir or not Path(seg_dir).is_dir():
+            QMessageBox.critical(self, "No segmentation directory",
+                                 f"Segmentation directory not found:\n{seg_dir}")
+            return
+        mrc_files = [f for f in Path(seg_dir).glob('*.mrc') if not f.name.startswith('._')]
+        if not mrc_files:
+            QMessageBox.critical(self, "No segmentations found",
+                                 f"No .mrc segmentation files found in:\n{seg_dir}")
             return
 
         # Check for existing results and prompt specifically for Mesh Generation (Archives ALL)
@@ -226,20 +235,22 @@ class MeshGenerationWidget(QWidget):
             self.status.update_status('Cancelled')
             return
 
+        # Snapshot widget-derived state on the GUI thread; the worker must not
+        # read QWidget values directly (they can change mid-run if the user
+        # switches experiment or work_dir).
+        exp_dir = Path(self.experiment_manager.work_dir.value) / self.experiment_manager.experiment_name.currentText()
+
         self.submit_btn.enabled = False
         self.status.update_status('Running')
-        # Pass the validated script_path and config info to the worker
-        threading.Thread(target=self._run_job_worker, args=(script_path, config_path, meshes_dir), daemon=True).start()
+        threading.Thread(
+            target=self._run_job_worker,
+            args=(runner, config_path, meshes_dir, exp_dir),
+            daemon=True,
+        ).start()
 
-    def _run_job_worker(self, script_path, config_path, meshes_dir):
+    def _run_job_worker(self, runner, config_path, meshes_dir, exp_dir):
         try:
-            # config_path and meshes_dir are passed from main thread
-            work_dir = Path(self.experiment_manager.work_dir.value)
-            
-            # Using the passed script_path which is already validated
-            pass # just a placeholder to keep indentation valid if needed, but we can just use script_path directly safely now
-            
-            cmd = [sys.executable, str(script_path), str(config_path)]
+            cmd = runner + [MAKE_MESHES, str(config_path)]
             print(f"Running: {' '.join(map(str, cmd))}")
             my_env = os.environ.copy()
             my_env["PYTHONUNBUFFERED"] = "1"
@@ -252,7 +263,7 @@ class MeshGenerationWidget(QWidget):
                 universal_newlines=True,
                 env=my_env,
                 # Run inside the experiment directory to avoid picking up sibling experiments
-                cwd=str(Path(self.experiment_manager.work_dir.value) / self.experiment_manager.experiment_name.currentText())
+                cwd=str(exp_dir),
             )
             progress = 0
             step_count = 0
@@ -274,38 +285,23 @@ class MeshGenerationWidget(QWidget):
                             self.status.update_progress(progress)
             return_code = process.wait()
             if return_code == 0:
-                exp_dir = Path(self.experiment_manager.work_dir.value) / self.experiment_manager.experiment_name.currentText()
-                work_dir = Path(self.experiment_manager.work_dir.value)
-                
-                # Check both work directory and experiment directory for mesh files
-                moved_files = []
-                search_dirs = [exp_dir, work_dir]
-                
-                for pattern in ['*.ply', '*.surface.vtp', '*.xyz']:
-                    for search_dir in search_dirs:
-                        if search_dir.exists():
-                            for f in search_dir.glob(pattern):
-                                if f.is_file():
-                                    # Sanitize filename: remove any accidental leading digits before letters
-                                    sanitized_name = re.sub(r'^[0-9]+(?=[A-Za-z])', '', f.name)
-                                    dest_path = meshes_dir / sanitized_name
-                                    try:
-                                        f.rename(dest_path)
-                                        moved_files.append(dest_path)
-                                    except Exception as e:
-                                        print(f"Error moving {f}: {e}")
-                
-                # Check if files exist in results directory (whether moved or already there)
-                mesh_files = list(meshes_dir.glob('*.ply')) + list(meshes_dir.glob('*.surface.vtp')) + list(meshes_dir.glob('*.xyz'))
+                # The CLI writes meshes straight into work_dir (== results/),
+                # so just confirm the expected outputs are there.
+                mesh_files = (list(meshes_dir.glob('*.surface.vtp'))
+                              + list(meshes_dir.glob('*.ply'))
+                              + list(meshes_dir.glob('*.xyz')))
                 if mesh_files:
                     self.status.update_status('Completed')
                     self.status.update_progress(100)
-                    print(f"Added {len(moved_files)} files to results")
-                    # Emit signal that mesh generation is complete - this will trigger other tabs to refresh
+                    vtp_count = len(list(meshes_dir.glob('*.surface.vtp')))
+                    print(f"Generated {vtp_count} surface mesh(es) in {meshes_dir}")
+                    # Notify other tabs (e.g. PyCurv) to refresh their file lists.
                     QTimer.singleShot(100, lambda: self.mesh_generation_complete.emit())
                 else:
                     self.status.update_status('Warning: No mesh files found')
-                    print("Warning: Process completed but no mesh files found in results directory")
+                    print("Warning: Process completed but no mesh files found in "
+                          f"{meshes_dir}. Check that seg_dir contains .mrc files and "
+                          "segmentation_values match the segmentation labels.")
             else:
                 self.status.update_status('Failed')
                 print("Process failed! Check output for details.")

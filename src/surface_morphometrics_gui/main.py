@@ -3,6 +3,7 @@ from magicgui import widgets
 from qtpy.QtWidgets import QTabWidget, QSizePolicy, QApplication
 from qtpy import QtCore
 import logging
+import sys
 import warnings
 
 # Filter out VisPy/macOS specific warnings that are harmless
@@ -10,13 +11,54 @@ warnings.filterwarnings("ignore", message="Back buffer dpr of .* doesn't match .
 
 logging.basicConfig(level=logging.INFO)
 
-from jobs.mesh_tab import MeshGenerationWidget
-from jobs.pycurv_tab import PyCurvWidget
-from jobs.distance_tab import DistanceOrientationWidget
-from plugins.tomoslice_plugin import TomoslicePlugin
-from plugins.mesh_viewer import MeshViewer
-from plugins.protein import ProteinLoaderPlugin
-from experiment_manager import ExperimentManager
+
+def _patch_status_checker_stack_size():
+    # On Apple Silicon (ARM64) the default QThread stack is ~544 KB.
+    # napari's StatusChecker thread calls numpy.linalg.inv(), which dispatches
+    # to OpenBLAS's dgetrf_parallel.  That routine allocates a frame far larger
+    # than 544 KB on ARM64, triggering ___chkstk_darwin → SIGBUS ("bus error").
+    # Increasing the stack to 8 MB avoids the overflow without changing behaviour.
+    #
+    # The small QThread stack is a macOS trait (~512 KB on Intel and Apple
+    # Silicon alike); Linux/Windows default to much larger stacks and don't hit
+    # this. The patch targets a private napari API, so it is gated to macOS and
+    # wrapped defensively: a napari version that moves StatusChecker must not
+    # break startup for everyone.
+    if sys.platform != "darwin":
+        return
+
+    try:
+        from napari._qt.threads.status_checker import StatusChecker
+        from qtpy.QtCore import QThread
+    except ImportError:
+        logging.warning(
+            "Could not patch napari StatusChecker stack size; "
+            "ARM64 SIGBUS workaround is inactive."
+        )
+        return
+
+    _orig_start = StatusChecker.start
+
+    def _start_with_large_stack(
+        self, priority: QThread.Priority = QThread.Priority.InheritPriority
+    ) -> None:
+        self.setStackSize(8 * 1024 * 1024)  # 8 MB; Qt default is ~544 KB on macOS ARM
+        _orig_start(self, priority)
+
+    StatusChecker.start = _start_with_large_stack
+
+
+_patch_status_checker_stack_size()
+
+from .jobs.mesh_tab import MeshGenerationWidget
+from .jobs.pycurv_tab import PyCurvWidget
+from .jobs.refinement_tab import RefinementWidget
+from .jobs.distance_tab import DistanceOrientationWidget
+from .jobs.thickness_tab import ThicknessWidget
+from .plugins.tomoslice_plugin import TomoslicePlugin
+from .plugins.mesh_viewer import MeshViewer
+from .plugins.protein import ProteinLoaderPlugin
+from .experiment_manager import ExperimentManager
 
 def setup_responsive_layout(viewer):
     """Setup responsive layout behavior for the viewer"""
@@ -45,7 +87,9 @@ def main():
         experiment_manager = ExperimentManager(viewer)
         mesh_widget = MeshGenerationWidget(experiment_manager)
         pycurv_widget = PyCurvWidget(experiment_manager=experiment_manager)
+        refinement_widget = RefinementWidget(experiment_manager)
         distance_widget = DistanceOrientationWidget(experiment_manager)
+        thickness_widget = ThicknessWidget(experiment_manager)
 
         # (Mesh completion connection set after dock widgets are created below)
         # Create tomoslice plugin
@@ -60,7 +104,9 @@ def main():
         dw1 = viewer.window.add_dock_widget(experiment_manager, name='Experiment Manager', area='right')
         dw2 = viewer.window.add_dock_widget(mesh_widget, name='Surface Mesh', area='right')
         dw3 = viewer.window.add_dock_widget(pycurv_widget, name='Curvature', area='right')
+        dw_refine = viewer.window.add_dock_widget(refinement_widget, name='Mesh Refinement', area='right')
         dw4 = viewer.window.add_dock_widget(distance_widget.native, name='Distance', area='right')
+        dw5 = viewer.window.add_dock_widget(thickness_widget, name='Thickness', area='right')
 
         # Add Mesh Viewer to the right side, tabified with the other widgets
         dw_mesh = viewer.window.add_dock_widget(
@@ -75,8 +121,10 @@ def main():
         # Tabify all right-side dock widgets
         viewer.window._qt_window.tabifyDockWidget(dw1, dw2)
         viewer.window._qt_window.tabifyDockWidget(dw2, dw3)
-        viewer.window._qt_window.tabifyDockWidget(dw3, dw4)
-        viewer.window._qt_window.tabifyDockWidget(dw4, dw_mesh)
+        viewer.window._qt_window.tabifyDockWidget(dw3, dw_refine)
+        viewer.window._qt_window.tabifyDockWidget(dw_refine, dw4)
+        viewer.window._qt_window.tabifyDockWidget(dw4, dw5)
+        viewer.window._qt_window.tabifyDockWidget(dw5, dw_mesh)
         viewer.window._qt_window.tabifyDockWidget(dw_mesh, dw_protein_loader)
         
         # Connect mesh generation completion signal to PyCurv file list refresh

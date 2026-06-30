@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "surface-morphometrics-gui"
+version = "0.1.0"
+description = "Graphical interface for the surface morphometrics pipeline (cryo-ET membrane ultrastructure analysis)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+dependencies = [
+    # GUI layer
+    "napari",
+    "magicgui",
+    "qtpy",
+    "napari-tomoslice",
+    "ruamel.yaml",
+    # CLI plugin command (`morphometrics gui` / standalone launcher)
+    "click",
+    # I/O
+    "mrcfile",
+    "starfile",
+    # data / plotting
+    "matplotlib",
+    "pandas",
+    "scikit-image",
+    # Heavy, shared with the pipeline env — left loose so an existing
+    # `morphometrics` environment's versions are reused rather than upgraded.
+    "numpy",
+    "vtk",
+    "libigl<2.5.0",
+]
+
+[project.optional-dependencies]
+# Test/dev tooling. PyQt5 is included so the suite has a Qt binding outside the
+# conda `morphometrics` env (e.g. in CI / a plain virtualenv).
+test = [
+    "pytest",
+    "pytest-qt",
+    "PyQt5",
+]
+
+[project.scripts]
+surface-morphometrics-gui = "surface_morphometrics_gui.main:main"
+
+# Contributes a `gui` subcommand to the `morphometrics` CLI (see surface_morphometrics
+# PR #58). The target module MUST stay import-light — heavy imports (napari/Qt) go
+# inside the command callback — so `morphometrics --help` stays fast. Discovery only
+# works when this package is installed in the same environment as the pipeline, which
+# the pipeline's `[gui]` extra guarantees.
+[project.entry-points."morphometrics.commands"]
+gui = "surface_morphometrics_gui._cli:gui"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["surface_morphometrics_gui*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+qt_api = "pyqt5"
+markers = [
+    "gui: marks tests that require a Qt display (deselect with '-m \"not gui\"')",
+    "integration: marks tests that need real data paths",
+]
