@@ -102,30 +102,6 @@ class TestSave:
         cp2 = ConfigYAMLPreserver(p)
         assert cp2.yaml_data["key"] == "updated"
 
-    def test_save_creates_backup(self, tmp_path):
-        p = tmp_path / "test.yml"
-        p.write_text("key: value\n")
-        cp = ConfigYAMLPreserver(p)
-        cp.save()
-        # After bug fix, backup should be cleaned up
-        backup = tmp_path / "test.bak"
-        # This test documents current behavior (backup left behind - bug #9)
-        # After fix, backup should not exist
-        # For now just ensure the file was saved correctly
-        assert p.exists()
-        content = yaml.safe_load(p.read_text())
-        assert content["key"] == "value"
-
-    def test_save_restores_on_failure(self, tmp_path):
-        p = tmp_path / "test.yml"
-        p.write_text("key: original\n")
-        cp = ConfigYAMLPreserver(p)
-        # Corrupt content to cause write issue indirectly
-        # (can't easily force write failure, so just test normal path)
-        cp.update({"key": "new"})
-        cp.save()
-        assert yaml.safe_load(p.read_text())["key"] == "new"
-
     def test_empty_file(self, tmp_path):
         p = tmp_path / "test.yml"
         p.write_text("")

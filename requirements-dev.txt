@@ -1,0 +1,5 @@
+# Development / test dependencies.
+-r requirements.txt
+
+pytest
+pytest-qt

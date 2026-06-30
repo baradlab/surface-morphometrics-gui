@@ -63,6 +63,22 @@ If you encounter issues, please open an issue or reach out for help.
 - Add tests for new features and bug fixes when possible.
 - If adding new modules, consider including a corresponding test file.
 
+Install the development dependencies and run the suite:
+
+```bash
+pip install -r requirements-dev.txt
+
+# GUI tests need a Qt platform; use the offscreen backend when headless.
+QT_QPA_PLATFORM=offscreen pytest tests/
+```
+
+Markers:
+- `gui` — needs a Qt application (deselect with `-m "not gui"`)
+- `integration` — needs real data paths
+
+The full suite runs automatically on every push and pull request via GitHub
+Actions (`.github/workflows/ci.yml`).
+
 ## Reporting Bugs
 If you find a bug:
 1. Search [existing issues](https://github.com/baradlab/surface-morphometrics-gui/issues) to see if it has already been reported.

@@ -1,0 +1,24 @@
+# Runtime dependencies for the Surface Morphometrics GUI.
+# These sit on top of the upstream `morphometrics` conda environment
+# (see CONTRIBUTING.md), but the full set is listed here so the GUI can
+# also be installed into a plain virtualenv / used in CI.
+
+napari
+magicgui
+qtpy
+PyQt5
+napari-tomoslice==0.2.1
+
+ruamel.yaml
+PyYAML
+
+numpy
+pandas
+matplotlib
+scikit-image
+
+mrcfile
+starfile
+
+vtk
+libigl<2.5.0

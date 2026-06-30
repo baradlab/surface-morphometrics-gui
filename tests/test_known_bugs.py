@@ -138,18 +138,19 @@ class TestBug6_InterDictEditorRename:
         editor._add_entry("original_key", ["val1"])
         assert "original_key" in editor.entries
 
-        # Simulate rename: change the key_edit widget value
+        # The entry is keyed by its original name; renaming the widget must not
+        # change the dict key (which is what the remove callback looks up).
         key_edit, value_editor, container = editor.entries["original_key"]
         key_edit.value = "renamed_key"
 
-        # The remove button callback should still work
-        # After fix, this should not leave stale entries
-        # Get the remove button and simulate click
-        # (The remove function captures key_edit.value which is now "renamed_key")
-        # After fix, it should remove using original key from entries dict
-        initial_count = len(editor.entries)
-        # The entries dict still has "original_key" as key
-        assert "original_key" in editor.entries
+        # Simulate clicking Remove. The remove button lives in the header
+        # container: container[0] is the header, container[0][1] the button.
+        remove_button = container[0][1]
+        remove_button.clicked.emit()
+
+        # After the fix the entry is removed despite the rename — no stale key.
+        assert "original_key" not in editor.entries
+        assert editor.entries == {}
 
 
 class TestBug7_UpdateConfigPathsOverwrite:
@@ -193,12 +194,14 @@ class TestBug8_ClearOnNegativeIndex:
                 em.data_dir.value = "/user/data"
                 em.cores_input.setValue(8)
 
-                # Simulate programmatic clear (index goes to -1)
+                # Simulate programmatic clear (index goes to -1); this fires
+                # _on_experiment_selected via the currentIndexChanged signal.
                 em.experiment_name.setCurrentIndex(-1)
-                # _on_experiment_selected fires via signal
 
-                # After fix, user values should be preserved during programmatic clears
-                # (The fix should guard against clearing during non-user-initiated changes)
+                # The fix guards on currentIndex() >= 0, so a negative index
+                # (non-user-initiated change) must not wipe the user's values.
+                assert str(em.data_dir.value) == "/user/data"
+                assert em.cores_input.value() == 8
 
 
 class TestBug9_BackupNotCleaned:
