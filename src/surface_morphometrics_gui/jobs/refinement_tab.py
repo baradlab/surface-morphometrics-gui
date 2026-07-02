@@ -1,5 +1,6 @@
 import copy
 import os
+import re
 import subprocess
 import threading
 from pathlib import Path
@@ -59,9 +60,15 @@ class RefinementWidget(QWidget):
     both before running.
     """
 
-    def __init__(self, experiment_manager):
+    def __init__(self, experiment_manager, mesh_viewer=None):
         super().__init__()
         self.experiment_manager = experiment_manager
+        # Optional MeshViewer used to preview refined iterations in napari before
+        # accepting one. None in headless/test paths — preview is then disabled.
+        self.mesh_viewer = mesh_viewer
+        # napari layers we created for the current preview: list of
+        # (component, iter_n, layer) so visibility/clear needn't re-parse names.
+        self._preview_layers = []
         self.is_running = False
 
         main_layout = QVBoxLayout()
@@ -145,16 +152,39 @@ class RefinementWidget(QWidget):
         # --- Accept an iteration (destructive: promotes one, removes the rest) ---
         inner_layout.addWidget(QLabel("<b>Accept Iteration</b>"))
         inner_layout.addWidget(QLabel(
-            "Promote one iteration to be the working surface (originals are backed\n"
-            "up). Inspect *_refinement_convergence.png first to pick the best one."))
-        accept = widgets.Container(layout='vertical', labels=True)
-        accept.native.layout().setSpacing(5)
-        accept.native.layout().setContentsMargins(3, 3, 3, 3)
-        self.accept_step_input = widgets.SpinBox(
-            value=1, min=1, max=50, label='Iteration to Accept')
-        accept.extend([self.accept_step_input])
-        inner_layout.addWidget(accept.native)
-        self.accept_btn = QPushButton('Accept Iteration')
+            "Promote one iteration per component to be the working surface (originals\n"
+            "are backed up). Inspect *_refinement_convergence.png first; IMM and OMM\n"
+            "converge differently, so you can accept a different iteration for each."))
+        # One step spinbox per component, rebuilt from the *_refined_iter* files.
+        self.accept_container = widgets.Container(layout='vertical', labels=True)
+        self.accept_container.native.layout().setSpacing(5)
+        self.accept_container.native.layout().setContentsMargins(3, 3, 3, 3)
+        inner_layout.addWidget(self.accept_container.native)
+        self._component_steps = {}
+
+        self.refresh_btn = QPushButton('Refresh Components')
+        self.refresh_btn.clicked.connect(self._refresh_accept_components)
+        inner_layout.addWidget(self.refresh_btn)
+
+        # Preview the refined iterations in napari before the destructive accept.
+        # The per-component spinbox above is the scrubber: the iteration it shows
+        # is the one Accept promotes. Only available when a MeshViewer was wired in.
+        if self.mesh_viewer is not None:
+            inner_layout.addWidget(QLabel(
+                "Preview loads each iteration (plus iter0, the original) as napari\n"
+                "surfaces; scrub with the spinbox above — the shown iteration is\n"
+                "the one Accept promotes."))
+            self.preview_btn = QPushButton('Preview Iterations')
+            self.preview_btn.clicked.connect(self._preview_iterations)
+            inner_layout.addWidget(self.preview_btn)
+            self.clear_preview_btn = QPushButton('Clear Preview')
+            self.clear_preview_btn.clicked.connect(self._clear_preview)
+            inner_layout.addWidget(self.clear_preview_btn)
+        else:
+            self.preview_btn = None
+            self.clear_preview_btn = None
+
+        self.accept_btn = QPushButton('Accept Iterations')
         self.accept_btn.clicked.connect(self._accept_iteration)
         inner_layout.addWidget(self.accept_btn)
 
@@ -191,6 +221,7 @@ class RefinementWidget(QWidget):
             self.laplacian_input.value = refine.get('laplacian_iterations', 5)
             self.laplacian_lambda_input.value = refine.get('laplacian_lambda', 0.5)
             self.lowpass_input.value = refine.get('lowpass_sigma', 0)
+            self._refresh_accept_components()
         except Exception as e:
             print(f"[RefinementWidget] Error in _on_config_loaded: {e}")
 
@@ -311,6 +342,8 @@ class RefinementWidget(QWidget):
         self.is_running = True
         self.submit_btn.enabled = False
         self.accept_btn.setEnabled(False)
+        if self.preview_btn is not None:
+            self.preview_btn.setEnabled(False)
         self.status.update_status('Starting...')
         self.status.update_progress(0)
         threading.Thread(target=self._run_refinement_worker, args=(job_data,), daemon=True).start()
@@ -364,6 +397,7 @@ class RefinementWidget(QWidget):
             self.status.update_status(
                 'Refinement complete. Inspect *_refinement_convergence.png, then accept an iteration.')
             print("===== Mesh refinement complete. =====")
+            QTimer.singleShot(0, self._refresh_accept_components)
 
         except Exception as e:
             self.status.update_status(f'Error: {e}')
@@ -374,6 +408,157 @@ class RefinementWidget(QWidget):
             QTimer.singleShot(0, self._job_cleanup)
 
     # ----- Accept an iteration -----
+
+    def _discover_refined_components(self, work_dir):
+        """Map component name -> sorted list of available iteration numbers.
+
+        Refined surfaces are named ``{tomo}_..._{component}_refined_iter{N}.surface.vtp``;
+        the component is the token immediately before ``_refined_iter``. Iterations
+        are aggregated across tomograms so a component's spinbox covers every N seen.
+        """
+        pat = re.compile(r'^(?P<base>.+)_refined_iter(?P<n>\d+)\.surface\.vtp$')
+        components = {}
+        for p in work_dir.glob('*_refined_iter*.surface.vtp'):
+            m = pat.match(p.name)
+            if not m:
+                continue
+            component = m.group('base').rsplit('_', 1)[-1]
+            components.setdefault(component, set()).add(int(m.group('n')))
+        return {c: sorted(v) for c, v in sorted(components.items())}
+
+    def _refresh_accept_components(self):
+        """Rebuild the per-component step spinboxes from the refined files on disk."""
+        # Preserve current selections across a refresh so a rescan doesn't reset them.
+        prev = {c: sb.value for c, sb in self._component_steps.items()}
+        # The file set is about to change (refine/accept just ran); drop stale
+        # preview layers so they can't outlive the iterations they represent.
+        self._clear_preview()
+        self.accept_container.clear()
+        self._component_steps = {}
+
+        try:
+            _, exp_dir = self._config_path()
+            work_dir = resolve_work_dir(exp_dir)
+        except Exception:
+            work_dir = None
+
+        found = self._discover_refined_components(work_dir) if work_dir else {}
+        if not found:
+            self.accept_container.append(widgets.Label(
+                value='No refined iterations found. Run refinement, then Refresh.'))
+            self.accept_btn.setEnabled(False)
+            if self.preview_btn is not None:
+                self.preview_btn.setEnabled(False)
+            return
+
+        for component, iters in found.items():
+            lo, hi = iters[0], iters[-1]
+            # Default to the final iteration (usually the converged one); keep the
+            # user's prior pick if it's still in range.
+            default = min(max(prev.get(component, hi), lo), hi)
+            sb = widgets.SpinBox(value=default, min=lo, max=hi,
+                                 label=f'{component}  (iters {lo}-{hi})')
+            # Scrubber: when a preview is loaded, changing the step shows that
+            # iteration's layer and hides the rest for this component.
+            sb.changed.connect(lambda _=None, c=component: self._on_step_changed(c))
+            self.accept_container.append(sb)
+            self._component_steps[component] = sb
+        self.accept_btn.setEnabled(not self.is_running)
+        if self.preview_btn is not None:
+            self.preview_btn.setEnabled(not self.is_running)
+
+    # ----- Preview iterations in napari -----
+
+    def _preview_iterations(self):
+        """Load every refined iteration (plus iter0 = the original surface) into
+        napari as surface layers, showing only the spinbox-selected iteration per
+        component. The accept spinbox then scrubs iterations via visibility."""
+        if self.mesh_viewer is None or not self._component_steps:
+            return
+
+        self._clear_preview()
+
+        try:
+            _, exp_dir = self._config_path()
+            work_dir = resolve_work_dir(exp_dir)
+        except Exception as e:
+            QMessageBox.warning(self, "Preview Failed", f"Could not resolve work dir: {e}")
+            return
+
+        pat = re.compile(r'^(?P<base>.+)_refined_iter(?P<n>\d+)\.surface\.vtp$')
+        loaded = 0
+        for component in self._component_steps:
+            # (base, iter_n, path) for this component across all tomogram basenames.
+            files = []
+            bases = set()
+            for p in sorted(work_dir.glob(f'*_{component}_refined_iter*.surface.vtp')):
+                m = pat.match(p.name)
+                if not m:
+                    continue
+                files.append((m.group('base'), int(m.group('n')), p))
+                bases.add(m.group('base'))
+            # iter0 = the still-canonical original surface for each base.
+            for base in sorted(bases):
+                orig = work_dir / f'{base}.surface.vtp'
+                if orig.exists():
+                    files.append((base, 0, orig))
+
+            multi_base = len(bases) > 1
+            for base, n, path in files:
+                suffix = f':{base}' if multi_base else ''
+                name = f'refine-preview:{component}:iter{n}{suffix}'
+                layer = self._add_preview_layer(str(path), name)
+                if layer is not None:
+                    self._preview_layers.append((component, n, layer))
+                    loaded += 1
+
+        if not loaded:
+            QMessageBox.information(
+                self, "Nothing to Preview",
+                "No refined iteration surfaces were found for the current components.")
+            return
+
+        for component, sb in self._component_steps.items():
+            self._on_step_changed(component)
+        self.mesh_viewer.viewer.reset_view()
+
+    def _add_preview_layer(self, path, name):
+        """Load a .vtp as a flat gray preview surface and return the layer.
+
+        Loaded flat (no per-vertex scalar coloring) so previews show shape, not
+        the noisy scalar arrays some refined surfaces carry."""
+        try:
+            return self.mesh_viewer._load_mesh_file(path, name=name, flat=True)
+        except Exception as e:
+            print(f"[RefinementWidget] Failed to preview {path}: {e}")
+            return None
+
+    def _on_step_changed(self, component):
+        """Show only the selected iteration's layer(s) for this component."""
+        sb = self._component_steps.get(component)
+        if sb is None or not self._preview_layers:
+            return
+        target = sb.value
+        for comp, n, layer in self._preview_layers:
+            if comp == component:
+                try:
+                    layer.visible = (n == target)
+                except Exception:
+                    pass
+
+    def _clear_preview(self):
+        """Remove all preview layers we created from the napari viewer."""
+        if self.mesh_viewer is None:
+            self._preview_layers = []
+            return
+        layers = self.mesh_viewer.viewer.layers
+        for _comp, _n, layer in self._preview_layers:
+            try:
+                if layer in layers:
+                    layers.remove(layer)
+            except Exception:
+                pass
+        self._preview_layers = []
 
     def _accept_iteration(self):
         if self.is_running:
@@ -388,21 +573,29 @@ class RefinementWidget(QWidget):
             QMessageBox.warning(self, "No Config", f"Config not found: {config_path}")
             return
 
-        step = self.accept_step_input.value
-        work_dir = resolve_work_dir(exp_dir)
-        if not list(work_dir.glob(f'*_refined_iter{step}.surface.vtp')):
-            QMessageBox.warning(
-                self, "No Such Iteration",
-                f"No refined surfaces for iteration {step} found in {work_dir}.\n"
-                "Run refinement first, or pick an iteration that was produced.")
+        if not self._component_steps:
+            QMessageBox.warning(self, "No Components",
+                                "No refined components found. Run refinement, then Refresh.")
             return
 
+        work_dir = resolve_work_dir(exp_dir)
+        choices = {c: sb.value for c, sb in self._component_steps.items()}
+        # Validate each chosen iteration exists for its component before touching files.
+        missing = [f"{c}: iteration {s}" for c, s in choices.items()
+                   if not list(work_dir.glob(f'*_{c}_refined_iter{s}.surface.vtp'))]
+        if missing:
+            QMessageBox.warning(
+                self, "No Such Iteration",
+                "These selections have no refined surface:\n  " + "\n  ".join(missing))
+            return
+
+        summary = "\n".join(f"  {c}: iteration {s}" for c, s in choices.items())
         confirm = QMessageBox.question(
-            self, "Accept Iteration",
-            f"Promote iteration {step} to be the working surface?\n\n"
-            "The original surfaces are backed up (*.orig.bak), but the other "
-            "refinement iterations and intermediates will be removed. This cannot "
-            "be undone from the GUI.",
+            self, "Accept Iterations",
+            f"Promote these iterations to be the working surfaces?\n\n{summary}\n\n"
+            "Originals are backed up (*.orig.bak), but the other refinement "
+            "iterations and intermediates will be removed. This cannot be undone "
+            "from the GUI.",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if confirm != QMessageBox.Yes:
             return
@@ -412,33 +605,45 @@ class RefinementWidget(QWidget):
             QMessageBox.critical(self, "morphometrics CLI not found", CLI_MISSING_MESSAGE)
             return
 
-        job_data = {'runner': runner, 'config_path': config_path, 'step': step}
+        job_data = {'runner': runner, 'config_path': config_path, 'choices': choices}
         self.is_running = True
         self.submit_btn.enabled = False
         self.accept_btn.setEnabled(False)
-        self.status.update_status(f'Accepting iteration {step}...')
+        if self.preview_btn is not None:
+            self.preview_btn.setEnabled(False)
+        self.status.update_status('Accepting iterations...')
         threading.Thread(target=self._accept_worker, args=(job_data,), daemon=True).start()
 
     def _accept_worker(self, job_data):
         try:
             runner = job_data['runner']
             config_path = job_data['config_path']
-            step = job_data['step']
+            choices = job_data['choices']
             work_dir = resolve_work_dir(Path(config_path).parent).resolve()
 
-            cmd = runner + [ACCEPT_REFINEMENT, str(config_path), str(step)]
-            print(f"--- Accepting refinement: {' '.join(map(str, cmd))} ---")
-            try:
-                subprocess.run(cmd, cwd=work_dir, check=True, text=True)
-            except subprocess.CalledProcessError:
-                self.status.update_status('Error: accept_refinement failed. See terminal.')
-                print("[ERROR] accept_refinement failed. Check the terminal output.")
-                return
+            # One accept_refinement call per component. accept_one's cleanup globs
+            # {basename}_refined_iter*, scoped to the accepted basename, so accepting
+            # one component never deletes another's iterations — order is irrelevant.
+            failed = []
+            for component, step in choices.items():
+                cmd = runner + [ACCEPT_REFINEMENT, str(config_path), str(step),
+                                '--component', component]
+                print(f"--- Accepting refinement: {' '.join(map(str, cmd))} ---")
+                try:
+                    subprocess.run(cmd, cwd=work_dir, check=True, text=True)
+                except subprocess.CalledProcessError:
+                    failed.append(component)
+                    print(f"[ERROR] accept_refinement failed for {component}.")
 
-            self.status.update_status(
-                f'Accepted iteration {step}. If it was a lightweight (xcorr) iteration, '
-                're-run Curvature before distances.')
-            print(f"===== Accepted refinement iteration {step}. =====")
+            if failed:
+                self.status.update_status(
+                    f"Error accepting: {', '.join(failed)}. See terminal.")
+            else:
+                accepted = ", ".join(f"{c}={s}" for c, s in choices.items())
+                self.status.update_status(
+                    f'Accepted {accepted}. If any was a lightweight (xcorr) iteration, '
+                    're-run Curvature before distances.')
+                print(f"===== Accepted refinement: {accepted}. =====")
 
         except Exception as e:
             self.status.update_status(f'Error: {e}')
@@ -446,9 +651,12 @@ class RefinementWidget(QWidget):
             import traceback
             traceback.print_exc()
         finally:
+            QTimer.singleShot(0, self._refresh_accept_components)
             QTimer.singleShot(0, self._job_cleanup)
 
     def _job_cleanup(self):
         self.submit_btn.enabled = True
-        self.accept_btn.setEnabled(True)
+        self.accept_btn.setEnabled(bool(self._component_steps))
+        if self.preview_btn is not None:
+            self.preview_btn.setEnabled(bool(self._component_steps))
         self.is_running = False
