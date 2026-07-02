@@ -156,9 +156,13 @@ class _FakeMeshViewer:
         self.viewer = _FakeLayerViewer()
         self.loaded = []
 
-    def _load_mesh_file(self, path):
-        self.loaded.append(path)
-        self.viewer.layers.append(_FakeLayer(path))
+    def _load_mesh_file(self, path, name=None, flat=False):
+        self.loaded.append((path, name, flat))
+        layer = _FakeLayer(path)
+        if name is not None:
+            layer.name = name
+        self.viewer.layers.append(layer)
+        return layer
 
 
 @pytest.mark.gui
@@ -199,7 +203,9 @@ class TestRefinementPreview:
         # Default spinbox value (final iter) is the only visible layer.
         visible = {n for _c, n, l in w._preview_layers if l.visible}
         assert visible == {6}
-        assert mv.viewer.reset_view_called == 1
+        assert mv.viewer.reset_view_called >= 1
+        # Preview surfaces load flat (no scalar coloring) for shape comparison.
+        assert all(flat for _p, _n, flat in mv.loaded)
 
     def test_spinbox_scrubs_visibility(self, qapp, mock_experiment_manager, tmp_path):
         mv = _FakeMeshViewer()

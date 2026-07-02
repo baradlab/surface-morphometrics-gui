@@ -191,8 +191,15 @@ class MeshViewer(QWidget):
 
         self._load_mesh_file(filepath)
 
-    def _load_mesh_file(self, filepath):
-        """Load a mesh file using VTK and add it to napari."""
+    def _load_mesh_file(self, filepath, name=None, flat=False):
+        """Load a mesh file using VTK and add it to napari.
+
+        flat=True loads the mesh as a matte gray surface for shape comparison:
+        it skips the per-vertex scalar auto-coloring (marks the layer already
+        initialized and omits ``source_vtp_path``), so the noisy scalar arrays
+        some VTPs carry don't paint the surface. Ambient occlusion still applies,
+        giving depth. Returns the created layer (or None on failure).
+        """
         ext = os.path.splitext(filepath)[1].lower()
 
         reader = None
@@ -237,18 +244,26 @@ class MeshViewer(QWidget):
         values = np.ones(len(vertices))
         mesh_tuple = (vertices, faces, values)
 
-        name = os.path.splitext(os.path.basename(filepath))[0]
-        # Only tag VTP files as the source path; other formats (PLY, STL, OBJ)
-        # cannot be re-read by vtkXMLPolyDataReader and would cause an XML parse
-        # error at byte 0 when _initialize_vtp_layer tries to load them.
-        metadata = {'source_vtp_path': filepath} if ext == '.vtp' else {}
+        if name is None:
+            name = os.path.splitext(os.path.basename(filepath))[0]
+        add_kwargs = {'name': name}
+        if flat:
+            # Skip scalar auto-coloring (see docstring); show a matte gray surface.
+            add_kwargs['metadata'] = {'vtp_initialized': True}
+            add_kwargs['colormap'] = 'gray'
+        else:
+            # Only tag VTP files as the source path; other formats (PLY, STL, OBJ)
+            # cannot be re-read by vtkXMLPolyDataReader and would cause an XML parse
+            # error at byte 0 when _initialize_vtp_layer tries to load them.
+            add_kwargs['metadata'] = {'source_vtp_path': filepath} if ext == '.vtp' else {}
 
         # Surface layers require 3D display mode; switch automatically.
         if self.viewer.dims.ndisplay != 3:
             self.viewer.dims.ndisplay = 3
 
-        self.viewer.add_surface(mesh_tuple, name=name, metadata=metadata)
+        layer = self.viewer.add_surface(mesh_tuple, **add_kwargs)
         self.viewer.reset_view()
+        return layer
 
     def _is_vtp_surface_layer(self, layer):
         """Checks if a layer is a Surface derived from a VTP file."""

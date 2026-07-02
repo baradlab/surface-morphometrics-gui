@@ -523,20 +523,15 @@ class RefinementWidget(QWidget):
         self.mesh_viewer.viewer.reset_view()
 
     def _add_preview_layer(self, path, name):
-        """Load a .vtp via the MeshViewer and return the created (renamed) layer."""
-        viewer = self.mesh_viewer.viewer
-        before = set(viewer.layers)
+        """Load a .vtp as a flat gray preview surface and return the layer.
+
+        Loaded flat (no per-vertex scalar coloring) so previews show shape, not
+        the noisy scalar arrays some refined surfaces carry."""
         try:
-            self.mesh_viewer._load_mesh_file(path)
+            return self.mesh_viewer._load_mesh_file(path, name=name, flat=True)
         except Exception as e:
             print(f"[RefinementWidget] Failed to preview {path}: {e}")
             return None
-        new = [l for l in viewer.layers if l not in before]
-        if not new:
-            return None
-        layer = new[-1]
-        layer.name = name
-        return layer
 
     def _on_step_changed(self, component):
         """Show only the selected iteration's layer(s) for this component."""
