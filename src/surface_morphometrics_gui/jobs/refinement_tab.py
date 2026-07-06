@@ -6,7 +6,7 @@ import threading
 from pathlib import Path
 
 from magicgui import widgets
-from qtpy.QtCore import QTimer
+from qtpy.QtCore import Qt, QTimer
 from ruamel.yaml import YAML
 from qtpy.QtWidgets import (
     QLabel,
@@ -67,7 +67,7 @@ class RefinementWidget(QWidget):
         # accepting one. None in headless/test paths — preview is then disabled.
         self.mesh_viewer = mesh_viewer
         # napari layers we created for the current preview: list of
-        # (component, iter_n, layer) so visibility/clear needn't re-parse names.
+        # (basename, iter_n, layer) so visibility/clear needn't re-parse names.
         self._preview_layers = []
         self.is_running = False
 
@@ -152,17 +152,24 @@ class RefinementWidget(QWidget):
         # --- Accept an iteration (destructive: promotes one, removes the rest) ---
         inner_layout.addWidget(QLabel("<b>Accept Iteration</b>"))
         inner_layout.addWidget(QLabel(
-            "Promote one iteration per component to be the working surface (originals\n"
-            "are backed up). Inspect *_refinement_convergence.png first; IMM and OMM\n"
-            "converge differently, so you can accept a different iteration for each."))
-        # One step spinbox per component, rebuilt from the *_refined_iter* files.
+            "Promote one iteration per surface (one row per tomogram × membrane;\n"
+            "originals are backed up). Inspect *_refinement_convergence.png first;\n"
+            "each surface can converge at a different iteration."))
+        # One step spinbox per surface basename, rebuilt from *_refined_iter* files.
         self.accept_container = widgets.Container(layout='vertical', labels=True)
         self.accept_container.native.layout().setSpacing(5)
         self.accept_container.native.layout().setContentsMargins(3, 3, 3, 3)
-        inner_layout.addWidget(self.accept_container.native)
-        self._component_steps = {}
+        accept_scroll = QScrollArea()
+        accept_scroll.setWidgetResizable(True)
+        accept_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        accept_scroll.setFrameShape(QScrollArea.NoFrame)
+        accept_scroll.setWidget(self.accept_container.native)
+        accept_scroll.setMinimumHeight(80)
+        accept_scroll.setMaximumHeight(280)
+        inner_layout.addWidget(accept_scroll)
+        self._surface_steps = {}
 
-        self.refresh_btn = QPushButton('Refresh Components')
+        self.refresh_btn = QPushButton('Refresh Surfaces')
         self.refresh_btn.clicked.connect(self._refresh_accept_components)
         inner_layout.addWidget(self.refresh_btn)
 
@@ -172,8 +179,8 @@ class RefinementWidget(QWidget):
         if self.mesh_viewer is not None:
             inner_layout.addWidget(QLabel(
                 "Preview loads each iteration (plus iter0, the original) as napari\n"
-                "surfaces; scrub with the spinbox above — the shown iteration is\n"
-                "the one Accept promotes."))
+                "surfaces per row above; scrub a spinbox — the shown iteration is\n"
+                "the one Accept promotes for that surface."))
             self.preview_btn = QPushButton('Preview Iterations')
             self.preview_btn.clicked.connect(self._preview_iterations)
             inner_layout.addWidget(self.preview_btn)
@@ -409,32 +416,38 @@ class RefinementWidget(QWidget):
 
     # ----- Accept an iteration -----
 
-    def _discover_refined_components(self, work_dir):
-        """Map component name -> sorted list of available iteration numbers.
+    def _discover_refined_surfaces(self, work_dir):
+        """Map surface basename -> sorted list of available iteration numbers.
 
-        Refined surfaces are named ``{tomo}_..._{component}_refined_iter{N}.surface.vtp``;
-        the component is the token immediately before ``_refined_iter``. Iterations
-        are aggregated across tomograms so a component's spinbox covers every N seen.
+        Refined surfaces are named ``{basename}_refined_iter{N}.surface.vtp`` where
+        ``basename`` is typically ``{tomogram}_{component}`` (e.g. ``TE1_IMM``).
+        Each basename gets its own spinbox so tomograms can accept different steps.
         """
         pat = re.compile(r'^(?P<base>.+)_refined_iter(?P<n>\d+)\.surface\.vtp$')
-        components = {}
+        surfaces = {}
         for p in work_dir.glob('*_refined_iter*.surface.vtp'):
             m = pat.match(p.name)
             if not m:
                 continue
-            component = m.group('base').rsplit('_', 1)[-1]
-            components.setdefault(component, set()).add(int(m.group('n')))
-        return {c: sorted(v) for c, v in sorted(components.items())}
+            surfaces.setdefault(m.group('base'), set()).add(int(m.group('n')))
+        return {b: sorted(v) for b, v in sorted(surfaces.items())}
+
+    @staticmethod
+    def _basename_filters(basename):
+        """Split ``{tomogram}_{component}`` for ``accept_refinement`` CLI filters."""
+        component = basename.rsplit('_', 1)[-1]
+        tomogram = basename[:-(len(component) + 1)]
+        return tomogram, component
 
     def _refresh_accept_components(self):
-        """Rebuild the per-component step spinboxes from the refined files on disk."""
+        """Rebuild the per-surface step spinboxes from the refined files on disk."""
         # Preserve current selections across a refresh so a rescan doesn't reset them.
-        prev = {c: sb.value for c, sb in self._component_steps.items()}
+        prev = {b: sb.value for b, sb in self._surface_steps.items()}
         # The file set is about to change (refine/accept just ran); drop stale
         # preview layers so they can't outlive the iterations they represent.
         self._clear_preview()
         self.accept_container.clear()
-        self._component_steps = {}
+        self._surface_steps = {}
 
         try:
             _, exp_dir = self._config_path()
@@ -442,7 +455,7 @@ class RefinementWidget(QWidget):
         except Exception:
             work_dir = None
 
-        found = self._discover_refined_components(work_dir) if work_dir else {}
+        found = self._discover_refined_surfaces(work_dir) if work_dir else {}
         if not found:
             self.accept_container.append(widgets.Label(
                 value='No refined iterations found. Run refinement, then Refresh.'))
@@ -451,18 +464,18 @@ class RefinementWidget(QWidget):
                 self.preview_btn.setEnabled(False)
             return
 
-        for component, iters in found.items():
+        for basename, iters in found.items():
             lo, hi = iters[0], iters[-1]
             # Default to the final iteration (usually the converged one); keep the
             # user's prior pick if it's still in range.
-            default = min(max(prev.get(component, hi), lo), hi)
+            default = min(max(prev.get(basename, hi), lo), hi)
             sb = widgets.SpinBox(value=default, min=lo, max=hi,
-                                 label=f'{component}  (iters {lo}-{hi})')
+                                 label=f'{basename}  (iters {lo}-{hi})')
             # Scrubber: when a preview is loaded, changing the step shows that
-            # iteration's layer and hides the rest for this component.
-            sb.changed.connect(lambda _=None, c=component: self._on_step_changed(c))
+            # iteration's layer and hides the rest for this surface.
+            sb.changed.connect(lambda _=None, b=basename: self._on_step_changed(b))
             self.accept_container.append(sb)
-            self._component_steps[component] = sb
+            self._surface_steps[basename] = sb
         self.accept_btn.setEnabled(not self.is_running)
         if self.preview_btn is not None:
             self.preview_btn.setEnabled(not self.is_running)
@@ -472,8 +485,8 @@ class RefinementWidget(QWidget):
     def _preview_iterations(self):
         """Load every refined iteration (plus iter0 = the original surface) into
         napari as surface layers, showing only the spinbox-selected iteration per
-        component. The accept spinbox then scrubs iterations via visibility."""
-        if self.mesh_viewer is None or not self._component_steps:
+        surface basename. Each accept spinbox scrubs its own layers via visibility."""
+        if self.mesh_viewer is None or not self._surface_steps:
             return
 
         self._clear_preview()
@@ -487,39 +500,32 @@ class RefinementWidget(QWidget):
 
         pat = re.compile(r'^(?P<base>.+)_refined_iter(?P<n>\d+)\.surface\.vtp$')
         loaded = 0
-        for component in self._component_steps:
-            # (base, iter_n, path) for this component across all tomogram basenames.
+        for basename in self._surface_steps:
             files = []
-            bases = set()
-            for p in sorted(work_dir.glob(f'*_{component}_refined_iter*.surface.vtp')):
+            for p in sorted(work_dir.glob(f'{basename}_refined_iter*.surface.vtp')):
                 m = pat.match(p.name)
                 if not m:
                     continue
-                files.append((m.group('base'), int(m.group('n')), p))
-                bases.add(m.group('base'))
-            # iter0 = the still-canonical original surface for each base.
-            for base in sorted(bases):
-                orig = work_dir / f'{base}.surface.vtp'
-                if orig.exists():
-                    files.append((base, 0, orig))
+                files.append((int(m.group('n')), p))
+            orig = work_dir / f'{basename}.surface.vtp'
+            if orig.exists():
+                files.append((0, orig))
 
-            multi_base = len(bases) > 1
-            for base, n, path in files:
-                suffix = f':{base}' if multi_base else ''
-                name = f'refine-preview:{component}:iter{n}{suffix}'
+            for n, path in files:
+                name = f'refine-preview:{basename}:iter{n}'
                 layer = self._add_preview_layer(str(path), name)
                 if layer is not None:
-                    self._preview_layers.append((component, n, layer))
+                    self._preview_layers.append((basename, n, layer))
                     loaded += 1
 
         if not loaded:
             QMessageBox.information(
                 self, "Nothing to Preview",
-                "No refined iteration surfaces were found for the current components.")
+                "No refined iteration surfaces were found for the current surfaces.")
             return
 
-        for component, sb in self._component_steps.items():
-            self._on_step_changed(component)
+        for basename in self._surface_steps:
+            self._on_step_changed(basename)
         self.mesh_viewer.viewer.reset_view()
 
     def _add_preview_layer(self, path, name):
@@ -533,14 +539,14 @@ class RefinementWidget(QWidget):
             print(f"[RefinementWidget] Failed to preview {path}: {e}")
             return None
 
-    def _on_step_changed(self, component):
-        """Show only the selected iteration's layer(s) for this component."""
-        sb = self._component_steps.get(component)
+    def _on_step_changed(self, basename):
+        """Show only the selected iteration's layer(s) for this surface."""
+        sb = self._surface_steps.get(basename)
         if sb is None or not self._preview_layers:
             return
         target = sb.value
-        for comp, n, layer in self._preview_layers:
-            if comp == component:
+        for base, n, layer in self._preview_layers:
+            if base == basename:
                 try:
                     layer.visible = (n == target)
                 except Exception:
@@ -573,23 +579,23 @@ class RefinementWidget(QWidget):
             QMessageBox.warning(self, "No Config", f"Config not found: {config_path}")
             return
 
-        if not self._component_steps:
-            QMessageBox.warning(self, "No Components",
-                                "No refined components found. Run refinement, then Refresh.")
+        if not self._surface_steps:
+            QMessageBox.warning(self, "No Surfaces",
+                                "No refined surfaces found. Run refinement, then Refresh.")
             return
 
         work_dir = resolve_work_dir(exp_dir)
-        choices = {c: sb.value for c, sb in self._component_steps.items()}
-        # Validate each chosen iteration exists for its component before touching files.
-        missing = [f"{c}: iteration {s}" for c, s in choices.items()
-                   if not list(work_dir.glob(f'*_{c}_refined_iter{s}.surface.vtp'))]
+        choices = {b: sb.value for b, sb in self._surface_steps.items()}
+        # Validate each chosen iteration exists for its surface before touching files.
+        missing = [f"{b}: iteration {s}" for b, s in choices.items()
+                   if not (work_dir / f'{b}_refined_iter{s}.surface.vtp').exists()]
         if missing:
             QMessageBox.warning(
                 self, "No Such Iteration",
                 "These selections have no refined surface:\n  " + "\n  ".join(missing))
             return
 
-        summary = "\n".join(f"  {c}: iteration {s}" for c, s in choices.items())
+        summary = "\n".join(f"  {b}: iteration {s}" for b, s in choices.items())
         confirm = QMessageBox.question(
             self, "Accept Iterations",
             f"Promote these iterations to be the working surfaces?\n\n{summary}\n\n"
@@ -621,25 +627,26 @@ class RefinementWidget(QWidget):
             choices = job_data['choices']
             work_dir = resolve_work_dir(Path(config_path).parent).resolve()
 
-            # One accept_refinement call per component. accept_one's cleanup globs
-            # {basename}_refined_iter*, scoped to the accepted basename, so accepting
-            # one component never deletes another's iterations — order is irrelevant.
+            # One accept_refinement call per surface basename, scoped with
+            # --tomogram and --component so each tomogram×membrane can pick a
+            # different iteration without affecting the others.
             failed = []
-            for component, step in choices.items():
+            for basename, step in choices.items():
+                tomogram, component = self._basename_filters(basename)
                 cmd = runner + [ACCEPT_REFINEMENT, str(config_path), str(step),
-                                '--component', component]
+                                '--tomogram', tomogram, '--component', component]
                 print(f"--- Accepting refinement: {' '.join(map(str, cmd))} ---")
                 try:
                     subprocess.run(cmd, cwd=work_dir, check=True, text=True)
                 except subprocess.CalledProcessError:
-                    failed.append(component)
-                    print(f"[ERROR] accept_refinement failed for {component}.")
+                    failed.append(basename)
+                    print(f"[ERROR] accept_refinement failed for {basename}.")
 
             if failed:
                 self.status.update_status(
                     f"Error accepting: {', '.join(failed)}. See terminal.")
             else:
-                accepted = ", ".join(f"{c}={s}" for c, s in choices.items())
+                accepted = ", ".join(f"{b}={s}" for b, s in choices.items())
                 self.status.update_status(
                     f'Accepted {accepted}. If any was a lightweight (xcorr) iteration, '
                     're-run Curvature before distances.')
@@ -656,7 +663,7 @@ class RefinementWidget(QWidget):
 
     def _job_cleanup(self):
         self.submit_btn.enabled = True
-        self.accept_btn.setEnabled(bool(self._component_steps))
+        self.accept_btn.setEnabled(bool(self._surface_steps))
         if self.preview_btn is not None:
-            self.preview_btn.setEnabled(bool(self._component_steps))
+            self.preview_btn.setEnabled(bool(self._surface_steps))
         self.is_running = False

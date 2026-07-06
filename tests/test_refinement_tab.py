@@ -77,7 +77,7 @@ class TestRefinementWidget:
             (work_dir / name).write_text("")
         return work_dir
 
-    def test_refresh_discovers_per_component_iterations(self, qapp, mock_experiment_manager, tmp_path):
+    def test_refresh_discovers_per_surface_iterations(self, qapp, mock_experiment_manager, tmp_path):
         w = self._make_widget(qapp, mock_experiment_manager)
         self._setup_refined(w, mock_experiment_manager, tmp_path, [
             "tomo1_labels_IMM_refined_iter1.surface.vtp",
@@ -89,12 +89,25 @@ class TestRefinementWidget:
 
         w._refresh_accept_components()
 
-        assert set(w._component_steps) == {"IMM", "OMM"}
-        imm, omm = w._component_steps["IMM"], w._component_steps["OMM"]
-        # Range spans the available iterations; default is the final (converged) one.
+        assert set(w._surface_steps) == {"tomo1_labels_IMM", "tomo1_labels_OMM"}
+        imm, omm = w._surface_steps["tomo1_labels_IMM"], w._surface_steps["tomo1_labels_OMM"]
         assert (imm.min, imm.max, imm.value) == (1, 6, 6)
         assert (omm.min, omm.max, omm.value) == (1, 5, 5)
         assert w.accept_btn.isEnabled()
+
+    def test_refresh_discovers_all_tomograms_separately(self, qapp, mock_experiment_manager, tmp_path):
+        w = self._make_widget(qapp, mock_experiment_manager)
+        self._setup_refined(w, mock_experiment_manager, tmp_path, [
+            "TE1_IMM_refined_iter1.surface.vtp",
+            "TE1_IMM_refined_iter6.surface.vtp",
+            "TE2_IMM_refined_iter1.surface.vtp",
+            "TE2_IMM_refined_iter4.surface.vtp",
+        ])
+        w._refresh_accept_components()
+
+        assert set(w._surface_steps) == {"TE1_IMM", "TE2_IMM"}
+        assert w._surface_steps["TE1_IMM"].value == 6
+        assert w._surface_steps["TE2_IMM"].value == 4
 
     def test_refresh_preserves_prior_selection(self, qapp, mock_experiment_manager, tmp_path):
         w = self._make_widget(qapp, mock_experiment_manager)
@@ -103,18 +116,18 @@ class TestRefinementWidget:
             "t_IMM_refined_iter6.surface.vtp",
         ])
         w._refresh_accept_components()
-        w._component_steps["IMM"].value = 3
+        w._surface_steps["t_IMM"].value = 3
         w._refresh_accept_components()
-        assert w._component_steps["IMM"].value == 3
+        assert w._surface_steps["t_IMM"].value == 3
 
     def test_refresh_no_files_disables_accept(self, qapp, mock_experiment_manager, tmp_path):
         w = self._make_widget(qapp, mock_experiment_manager)
         self._setup_refined(w, mock_experiment_manager, tmp_path, [])
         w._refresh_accept_components()
-        assert w._component_steps == {}
+        assert w._surface_steps == {}
         assert not w.accept_btn.isEnabled()
 
-    def test_accept_worker_runs_one_call_per_component(self, qapp, mock_experiment_manager, tmp_path):
+    def test_accept_worker_runs_one_call_per_surface(self, qapp, mock_experiment_manager, tmp_path):
         w = self._make_widget(qapp, mock_experiment_manager)
         work_dir = self._setup_refined(w, mock_experiment_manager, tmp_path, [])
         config_path = work_dir / "exp_config.yml"
@@ -123,15 +136,20 @@ class TestRefinementWidget:
         job_data = {
             "runner": ["morphometrics"],
             "config_path": config_path,
-            "choices": {"IMM": 6, "OMM": 5},
+            "choices": {"TE1_IMM": 6, "TE1_OMM": 5, "TE2_IMM": 4},
         }
         with patch("jobs.refinement_tab.subprocess.run") as run:
             w._accept_worker(job_data)
 
         cmds = [c.args[0] for c in run.call_args_list]
-        assert len(cmds) == 2
-        for cmd, comp, step in [(cmds[0], "IMM", "6"), (cmds[1], "OMM", "5")]:
-            assert cmd[-3:] == [step, "--component", comp]
+        assert len(cmds) == 3
+        expected = [
+            (["6", "--tomogram", "TE1", "--component", "IMM"]),
+            (["5", "--tomogram", "TE1", "--component", "OMM"]),
+            (["4", "--tomogram", "TE2", "--component", "IMM"]),
+        ]
+        for cmd, exp_tail in zip(cmds, expected):
+            assert cmd[-5:] == exp_tail
 
 
 class _FakeLayer:
@@ -194,14 +212,14 @@ class TestRefinementPreview:
         w._refresh_accept_components()
         w._preview_iterations()
 
-        names = {l.name for _c, _n, l in w._preview_layers}
+        names = {l.name for _b, _n, l in w._preview_layers}
         assert names == {
-            "refine-preview:IMM:iter0",
-            "refine-preview:IMM:iter1",
-            "refine-preview:IMM:iter6",
+            "refine-preview:t_IMM:iter0",
+            "refine-preview:t_IMM:iter1",
+            "refine-preview:t_IMM:iter6",
         }
         # Default spinbox value (final iter) is the only visible layer.
-        visible = {n for _c, n, l in w._preview_layers if l.visible}
+        visible = {n for _b, n, l in w._preview_layers if l.visible}
         assert visible == {6}
         assert mv.viewer.reset_view_called >= 1
         # Preview surfaces load flat (no scalar coloring) for shape comparison.
@@ -218,8 +236,8 @@ class TestRefinementPreview:
         w._refresh_accept_components()
         w._preview_iterations()
 
-        w._component_steps["IMM"].value = 1  # emits changed -> _on_step_changed
-        visible = {n for _c, n, l in w._preview_layers if l.visible}
+        w._surface_steps["t_IMM"].value = 1  # emits changed -> _on_step_changed
+        visible = {n for _b, n, l in w._preview_layers if l.visible}
         assert visible == {1}
 
     def test_clear_preview_removes_layers(self, qapp, mock_experiment_manager, tmp_path):
