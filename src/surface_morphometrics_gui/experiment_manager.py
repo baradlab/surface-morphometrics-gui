@@ -422,6 +422,23 @@ class ExperimentManager(QWidget):
             # User is typing a new name — just update button text
             self.submit_button.setText('Start New Experiment')
 
+    def _apply_config_to_ui(self, existing_config, config_path=None):
+        """Push a loaded experiment config into the manager widgets."""
+        if get_seg_dir(existing_config):
+            self.data_dir.value = get_seg_dir(existing_config)
+        self.config_template.changed.disconnect(self._handle_config_template_selection)
+        try:
+            if 'config_template' in existing_config:
+                self.config_template.value = existing_config['config_template']
+            elif config_path is not None:
+                self.config_template.value = str(config_path)
+        finally:
+            self.config_template.changed.connect(self._handle_config_template_selection)
+        if 'cores' in existing_config:
+            self.cores_input.setValue(existing_config['cores'])
+        if 'segmentation_values' in existing_config:
+            self.segmentation_container._set_values(existing_config['segmentation_values'])
+
     def _load_existing_experiment_config(self):
 
         """Load configuration from an existing experiment"""
@@ -457,34 +474,12 @@ class ExperimentManager(QWidget):
             # the flat exp_dir for a raw CLI project).
             self.current_config['work_dir'] = cli_work_dir(resolve_work_dir(exp_dir))
 
-            # Block config_template.changed while restoring UI so that
-            # _handle_config_template_selection does not re-load the
-            # original template file and overwrite current_config / data_dir.
-            self.config_template.changed.disconnect(self._handle_config_template_selection)
-            try:
-                # Update UI with loaded config values
-                if get_seg_dir(existing_config):
-                    self.data_dir.value = get_seg_dir(existing_config)
-                # Load the original config template if available
-                if 'config_template' in existing_config:
-                    self.config_template.value = existing_config['config_template']
-                else:
-                    self.config_template.value = str(config_path)
-            finally:
-                self.config_template.changed.connect(self._handle_config_template_selection)
-            # Set cores if available
-            if 'cores' in existing_config:
-
-                self.cores_input.setValue(existing_config['cores'])
-            # Load segmentation values if available
-            if 'segmentation_values' in existing_config:
-
-                self.segmentation_container._set_values(existing_config['segmentation_values'])
+            self._apply_config_to_ui(existing_config, config_path=config_path)
             # Emit signal that config was loaded - this will update job tabs
 
             self.config_loaded.emit()
         except Exception as e:
-            pass
+            print(f'[Resume] Failed to load experiment config: {e}')
 
     def _check_start_button_state(self):
         """Enable start button only when all required fields are filled"""
@@ -690,6 +685,8 @@ class ExperimentManager(QWidget):
             # so the config the tabs read matches where the files really are.
             self.current_config['work_dir'] = cli_work_dir(resolve_work_dir(exp_dir))
 
+            self._apply_config_to_ui(self.current_config, config_path=config_path)
+
             # Emit signal that config was loaded - this will update job tabs
             self.config_loaded.emit()
             
@@ -865,6 +862,8 @@ class ExperimentManager(QWidget):
         idx = self.experiment_name.findText(plan.exp_name)
         if idx >= 0:
             self.experiment_name.setCurrentIndex(idx)
+        # Ensure job tabs see the adopted config even if the index didn't change.
+        self._load_existing_experiment_config()
 
         if result.failed_moves:
             detail = "\n".join(f"  {s.name}: {msg}" for s, msg in result.failed_moves[:5])
