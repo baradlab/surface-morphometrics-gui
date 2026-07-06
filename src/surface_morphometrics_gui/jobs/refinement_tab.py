@@ -3,12 +3,14 @@ import os
 import re
 import subprocess
 import threading
+from collections import OrderedDict
 from pathlib import Path
 
 from magicgui import widgets
 from qtpy.QtCore import Qt, QTimer
 from ruamel.yaml import YAML
 from qtpy.QtWidgets import (
+    QComboBox,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -39,6 +41,13 @@ REFINE_OUTPUT_PATTERNS = [
     '*_profile_evolution.png',
 ]
 
+# Above this many surfaces, previewing one napari layer per surface is too heavy,
+# so the tab switches to single-surface mode: a dropdown picks one basename and
+# only that surface's current iteration is shown.
+PREVIEW_ALL_THRESHOLD = 8
+# Cap on cached parsed meshes so scrubbing back is instant without unbounded RAM.
+PREVIEW_CACHE_MAX = 32
+
 
 class RefinementWidget(QWidget):
     """Optional density-guided mesh refinement tab.
@@ -66,9 +75,18 @@ class RefinementWidget(QWidget):
         # Optional MeshViewer used to preview refined iterations in napari before
         # accepting one. None in headless/test paths — preview is then disabled.
         self.mesh_viewer = mesh_viewer
-        # napari layers we created for the current preview: list of
-        # (basename, iter_n, layer) so visibility/clear needn't re-parse names.
-        self._preview_layers = []
+        # Lazy preview state. Rather than loading every iteration of every
+        # surface up front, we scan the work dir for paths only, then load the
+        # current spinbox iteration on demand and cache parsed meshes.
+        #   _preview_catalog:      basename -> {iter_n: Path}  (filesystem scan)
+        #   _preview_mesh_cache:   (basename, iter_n) -> mesh_tuple  (LRU-bounded)
+        #   _preview_layers:       basename -> napari layer (<=1 per surface,
+        #                          or exactly one total in large single-surface mode)
+        #   _preview_active_basename: the surface shown in large mode (else None)
+        self._preview_catalog = {}
+        self._preview_mesh_cache = OrderedDict()
+        self._preview_layers = {}
+        self._preview_active_basename = None
         self.is_running = False
 
         main_layout = QVBoxLayout()
@@ -178,9 +196,19 @@ class RefinementWidget(QWidget):
         # is the one Accept promotes. Only available when a MeshViewer was wired in.
         if self.mesh_viewer is not None:
             inner_layout.addWidget(QLabel(
-                "Preview loads each iteration (plus iter0, the original) as napari\n"
-                "surfaces per row above; scrub a spinbox — the shown iteration is\n"
-                "the one Accept promotes for that surface."))
+                "Preview loads each surface's current iteration as a napari surface;\n"
+                "scrub a spinbox — the shown iteration is the one Accept promotes for\n"
+                "that surface. With many surfaces, pick one below to preview at a time."))
+            # Large-mode surface picker: only one layer is shown at a time when
+            # there are more than PREVIEW_ALL_THRESHOLD surfaces. Hidden otherwise.
+            self.preview_combo_label = QLabel("Preview surface:")
+            self.preview_combo_label.setVisible(False)
+            inner_layout.addWidget(self.preview_combo_label)
+            self.preview_surface_combo = QComboBox()
+            self.preview_surface_combo.setVisible(False)
+            self.preview_surface_combo.currentTextChanged.connect(
+                self._on_preview_surface_changed)
+            inner_layout.addWidget(self.preview_surface_combo)
             self.preview_btn = QPushButton('Preview Iterations')
             self.preview_btn.clicked.connect(self._preview_iterations)
             inner_layout.addWidget(self.preview_btn)
@@ -190,6 +218,8 @@ class RefinementWidget(QWidget):
         else:
             self.preview_btn = None
             self.clear_preview_btn = None
+            self.preview_surface_combo = None
+            self.preview_combo_label = None
 
         self.accept_btn = QPushButton('Accept Iterations')
         self.accept_btn.clicked.connect(self._accept_iteration)
@@ -462,6 +492,7 @@ class RefinementWidget(QWidget):
             self.accept_btn.setEnabled(False)
             if self.preview_btn is not None:
                 self.preview_btn.setEnabled(False)
+            self._populate_preview_combo()
             return
 
         for basename, iters in found.items():
@@ -479,13 +510,54 @@ class RefinementWidget(QWidget):
         self.accept_btn.setEnabled(not self.is_running)
         if self.preview_btn is not None:
             self.preview_btn.setEnabled(not self.is_running)
+        self._populate_preview_combo()
 
     # ----- Preview iterations in napari -----
 
+    def _populate_preview_combo(self):
+        """Refill the large-mode surface picker and show it only when needed."""
+        if self.preview_surface_combo is None:
+            return
+        large = len(self._surface_steps) > PREVIEW_ALL_THRESHOLD
+        # Block signals so refilling doesn't fire a spurious surface swap.
+        self.preview_surface_combo.blockSignals(True)
+        self.preview_surface_combo.clear()
+        self.preview_surface_combo.addItems(list(self._surface_steps))
+        self.preview_surface_combo.blockSignals(False)
+        self.preview_surface_combo.setVisible(large)
+        if self.preview_combo_label is not None:
+            self.preview_combo_label.setVisible(large)
+
+    def _build_preview_catalog(self, work_dir):
+        """Scan the work dir for each surface's iteration files (paths only).
+
+        Returns ``{basename: {iter_n: Path}}`` including iter0 (the original
+        ``{basename}.surface.vtp``) when present. No VTK parsing happens here.
+        """
+        pat = re.compile(r'^(?P<base>.+)_refined_iter(?P<n>\d+)\.surface\.vtp$')
+        catalog = {}
+        for basename in self._surface_steps:
+            iters = {}
+            for p in sorted(work_dir.glob(f'{basename}_refined_iter*.surface.vtp')):
+                m = pat.match(p.name)
+                if not m or m.group('base') != basename:
+                    continue
+                iters[int(m.group('n'))] = p
+            orig = work_dir / f'{basename}.surface.vtp'
+            if orig.exists():
+                iters[0] = orig
+            if iters:
+                catalog[basename] = iters
+        return catalog
+
     def _preview_iterations(self):
-        """Load every refined iteration (plus iter0 = the original surface) into
-        napari as surface layers, showing only the spinbox-selected iteration per
-        surface basename. Each accept spinbox scrubs its own layers via visibility."""
+        """Preview the current iteration of each surface as a napari layer.
+
+        Small datasets (<= PREVIEW_ALL_THRESHOLD surfaces) get one layer per
+        surface, each showing its spinbox iteration. Larger datasets show a
+        single surface at a time, chosen by the picker combo. Only the shown
+        iterations are parsed; scrubbing swaps layer data from the mesh cache.
+        """
         if self.mesh_viewer is None or not self._surface_steps:
             return
 
@@ -498,73 +570,154 @@ class RefinementWidget(QWidget):
             QMessageBox.warning(self, "Preview Failed", f"Could not resolve work dir: {e}")
             return
 
-        pat = re.compile(r'^(?P<base>.+)_refined_iter(?P<n>\d+)\.surface\.vtp$')
-        loaded = 0
-        for basename in self._surface_steps:
-            files = []
-            for p in sorted(work_dir.glob(f'{basename}_refined_iter*.surface.vtp')):
-                m = pat.match(p.name)
-                if not m:
-                    continue
-                files.append((int(m.group('n')), p))
-            orig = work_dir / f'{basename}.surface.vtp'
-            if orig.exists():
-                files.append((0, orig))
-
-            for n, path in files:
-                name = f'refine-preview:{basename}:iter{n}'
-                layer = self._add_preview_layer(str(path), name)
-                if layer is not None:
-                    self._preview_layers.append((basename, n, layer))
-                    loaded += 1
-
-        if not loaded:
+        self._preview_catalog = self._build_preview_catalog(work_dir)
+        if not self._preview_catalog:
             QMessageBox.information(
                 self, "Nothing to Preview",
                 "No refined iteration surfaces were found for the current surfaces.")
             return
 
-        for basename in self._surface_steps:
-            self._on_step_changed(basename)
+        if len(self._surface_steps) > PREVIEW_ALL_THRESHOLD:
+            # Single-surface mode: load only the picked (or first) surface.
+            basename = None
+            if self.preview_surface_combo is not None:
+                basename = self.preview_surface_combo.currentText() or None
+            if basename not in self._preview_catalog:
+                basename = next(iter(self._preview_catalog))
+            self._preview_active_basename = basename
+            self._ensure_preview_layer(basename)
+        else:
+            self._preview_active_basename = None
+            for basename in self._surface_steps:
+                if basename in self._preview_catalog:
+                    self._ensure_preview_layer(basename)
+
         self.mesh_viewer.viewer.reset_view()
 
-    def _add_preview_layer(self, path, name):
+    def _current_iter(self, basename, iters):
+        """The spinbox iteration for a surface, clamped to available files."""
+        sb = self._surface_steps.get(basename)
+        n = sb.value if sb is not None else max(iters)
+        if n in iters:
+            return n
+        return min(iters, key=lambda k: abs(k - n))
+
+    def _get_preview_mesh(self, basename, n):
+        """Return the parsed mesh tuple for ``(basename, n)``, using the cache.
+
+        On a miss, reads the file via the viewer's ``read_mesh_tuple`` and stores
+        it, evicting the oldest entry once the cache exceeds PREVIEW_CACHE_MAX.
+        """
+        if self.mesh_viewer is None:
+            return None
+        key = (basename, n)
+        cached = self._preview_mesh_cache.get(key)
+        if cached is not None:
+            self._preview_mesh_cache.move_to_end(key)
+            return cached
+        path = self._preview_catalog.get(basename, {}).get(n)
+        if path is None:
+            return None
+        mesh_tuple = self.mesh_viewer.read_mesh_tuple(str(path))
+        if mesh_tuple is None:
+            return None
+        self._preview_mesh_cache[key] = mesh_tuple
+        while len(self._preview_mesh_cache) > PREVIEW_CACHE_MAX:
+            self._preview_mesh_cache.popitem(last=False)
+        return mesh_tuple
+
+    def _ensure_preview_layer(self, basename):
+        """Create the surface's preview layer if missing, else update its data."""
+        if self.mesh_viewer is None:
+            return
+        iters = self._preview_catalog.get(basename)
+        if not iters:
+            return
+        n = self._current_iter(basename, iters)
+        layer = self._preview_layers.get(basename)
+        if layer is None:
+            path = iters[n]
+            name = f'refine-preview:{basename}:iter{n}'
+            layer = self._load_preview_layer(str(path), name)
+            if layer is not None:
+                self._preview_layers[basename] = layer
+        else:
+            self._apply_iter_to_layer(basename, layer, n)
+
+    def _load_preview_layer(self, path, name):
         """Load a .vtp as a flat gray preview surface and return the layer.
 
         Loaded flat (no per-vertex scalar coloring) so previews show shape, not
-        the noisy scalar arrays some refined surfaces carry."""
+        the noisy scalar arrays some refined surfaces carry. ``reset_view`` is
+        skipped so preview resets the camera once, after all layers are loaded."""
         try:
-            return self.mesh_viewer._load_mesh_file(path, name=name, flat=True)
+            return self.mesh_viewer._load_mesh_file(
+                path, name=name, flat=True, reset_view=False)
         except Exception as e:
             print(f"[RefinementWidget] Failed to preview {path}: {e}")
             return None
 
-    def _on_step_changed(self, basename):
-        """Show only the selected iteration's layer(s) for this surface."""
-        sb = self._surface_steps.get(basename)
-        if sb is None or not self._preview_layers:
+    def _apply_iter_to_layer(self, basename, layer, n):
+        """Swap an existing preview layer's geometry to iteration ``n``."""
+        mesh_tuple = self._get_preview_mesh(basename, n)
+        if mesh_tuple is None:
             return
-        target = sb.value
-        for base, n, layer in self._preview_layers:
-            if base == basename:
+        try:
+            layer.data = mesh_tuple
+            layer.name = f'refine-preview:{basename}:iter{n}'
+        except Exception as e:
+            print(f"[RefinementWidget] Failed to update preview {basename}: {e}")
+
+    def _on_preview_surface_changed(self, basename):
+        """Combo callback: swap the single previewed surface in large mode."""
+        if not basename or not self._preview_catalog:
+            return
+        if len(self._surface_steps) <= PREVIEW_ALL_THRESHOLD:
+            return
+        self._set_active_preview_surface(basename)
+
+    def _set_active_preview_surface(self, basename):
+        """Show ``basename`` as the sole preview layer (single-surface mode)."""
+        if self.mesh_viewer is None or basename not in self._preview_catalog:
+            return
+        self._remove_preview_layers()
+        self._preview_active_basename = basename
+        self._ensure_preview_layer(basename)
+        self.mesh_viewer.viewer.reset_view()
+
+    def _on_step_changed(self, basename):
+        """Update the surface's layer data to its newly selected iteration."""
+        if self.mesh_viewer is None or not self._preview_catalog:
+            return
+        # In single-surface mode only the active surface has a layer.
+        if (self._preview_active_basename is not None
+                and basename != self._preview_active_basename):
+            return
+        layer = self._preview_layers.get(basename)
+        iters = self._preview_catalog.get(basename)
+        if layer is None or not iters:
+            return
+        n = self._current_iter(basename, iters)
+        self._apply_iter_to_layer(basename, layer, n)
+
+    def _remove_preview_layers(self):
+        """Remove the napari layers we created, keeping catalog/cache intact."""
+        if self.mesh_viewer is not None:
+            layers = self.mesh_viewer.viewer.layers
+            for layer in self._preview_layers.values():
                 try:
-                    layer.visible = (n == target)
+                    if layer in layers:
+                        layers.remove(layer)
                 except Exception:
                     pass
+        self._preview_layers = {}
 
     def _clear_preview(self):
-        """Remove all preview layers we created from the napari viewer."""
-        if self.mesh_viewer is None:
-            self._preview_layers = []
-            return
-        layers = self.mesh_viewer.viewer.layers
-        for _comp, _n, layer in self._preview_layers:
-            try:
-                if layer in layers:
-                    layers.remove(layer)
-            except Exception:
-                pass
-        self._preview_layers = []
+        """Remove preview layers and drop the catalog/cache/active selection."""
+        self._remove_preview_layers()
+        self._preview_catalog = {}
+        self._preview_mesh_cache.clear()
+        self._preview_active_basename = None
 
     def _accept_iteration(self):
         if self.is_running:
