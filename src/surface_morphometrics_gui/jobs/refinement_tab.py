@@ -26,6 +26,8 @@ from ..utils.script_resolver import (
     REFINE_MESH,
     ACCEPT_REFINEMENT,
     resolve_work_dir,
+    resolve_config_work_dir,
+    work_dir_search_candidates,
     cli_work_dir,
 )
 from ..widgets.job_status import JobStatusWidget
@@ -262,51 +264,92 @@ class RefinementWidget(QWidget):
         except Exception as e:
             print(f"[RefinementWidget] Error in _on_config_loaded: {e}")
 
+    def _resolve_exp_dir(self):
+        """Experiment directory from the manager's work-dir field and name.
+
+        The work-dir field is usually the parent of experiment folders, but
+        users sometimes point it directly at an experiment directory.
+        """
+        exp_name = self.experiment_manager.experiment_name.currentText().strip()
+        parent = Path(str(self.experiment_manager.work_dir.value or ''))
+        if not exp_name:
+            raise ValueError("No experiment selected")
+        if not parent:
+            raise ValueError("Work directory not set")
+
+        nested = parent / exp_name
+        if nested.is_dir() and (
+            (nested / 'config.yml').exists() or list(nested.glob('*_config.yml'))
+        ):
+            return nested
+        if (parent / 'config.yml').exists() or list(parent.glob('*_config.yml')):
+            return parent
+        if parent.name == exp_name and parent.is_dir():
+            return parent
+        return nested
+
     def _config_path(self):
         exp_name = self.experiment_manager.experiment_name.currentText().strip()
-        exp_dir = Path(self.experiment_manager.work_dir.value) / exp_name
+        exp_dir = self._resolve_exp_dir()
         preferred = exp_dir / f"{exp_name}_config.yml"
         fallback = exp_dir / 'config.yml'
         return (preferred if preferred.exists() else fallback), exp_dir
 
-    def _resolve_work_dir(self):
-        """Directory where refinement outputs live for the loaded experiment.
-
-        On resume the saved config's ``work_dir`` is authoritative (set by
-        ExperimentManager when the experiment is loaded). Re-deriving from the
-        GUI parent path alone can miss files when layout or paths differ.
-        """
-        candidates = []
+    def _iter_work_dir_candidates(self):
+        """Yield directories that may contain refinement iteration surfaces."""
         config = self.experiment_manager.current_config or {}
-        cfg_work = config.get('work_dir')
-        if cfg_work:
-            candidates.append(Path(str(cfg_work).rstrip(os.sep)))
         try:
-            _, exp_dir = self._config_path()
-            candidates.append(resolve_work_dir(exp_dir))
-            candidates.append(exp_dir)
+            exp_dir = self._resolve_exp_dir()
         except Exception as e:
             print(f"[RefinementWidget] Could not resolve experiment dir: {e}")
+            exp_dir = None
 
-        seen = set()
-        unique = []
-        for d in candidates:
-            if d is None:
-                continue
-            p = Path(d)
-            key = str(p.resolve()) if p.exists() else str(p)
-            if key in seen:
-                continue
-            seen.add(key)
-            unique.append(p)
+        if exp_dir is not None:
+            for d in work_dir_search_candidates(config, exp_dir):
+                yield d
 
-        for p in unique:
-            if p.is_dir() and list(p.glob('*_refined_iter*.surface.vtp')):
-                return p
-        for p in unique:
-            if p.is_dir():
-                return p
+        # work_dir field may already be the experiment folder (not its parent).
+        raw = self.experiment_manager.work_dir.value
+        exp_name = self.experiment_manager.experiment_name.currentText().strip()
+        if raw and exp_name:
+            raw_p = Path(str(raw))
+            if raw_p.is_dir() and raw_p.name == exp_name:
+                for d in work_dir_search_candidates(config, raw_p):
+                    yield d
+
+    def _resolve_work_dir(self):
+        """Best directory for refinement outputs (first candidate with iter files)."""
+        _found, primary = self._discover_refined_surfaces_all()
+        if primary is not None:
+            return primary
+        for d in self._iter_work_dir_candidates():
+            if d.is_dir():
+                return d
         return None
+
+    def _discover_refined_surfaces_all(self):
+        """Scan every plausible output dir; merge discoveries across layouts."""
+        merged = {}
+        primary = None
+        searched = []
+        for d in self._iter_work_dir_candidates():
+            key = str(d.resolve()) if d.exists() else str(d)
+            if key in searched:
+                continue
+            searched.append(key)
+            if not d.is_dir():
+                print(f"[RefinementWidget] Skip (not a dir): {d}")
+                continue
+            part = self._discover_refined_surfaces(d)
+            n_files = sum(len(v) for v in part.values())
+            print(f"[RefinementWidget] Scan {d}: {n_files} refined iteration(s)")
+            if part and primary is None:
+                primary = d
+            for basename, iters in part.items():
+                merged.setdefault(basename, set()).update(iters)
+        if not merged:
+            print(f"[RefinementWidget] No refined iterations under: {', '.join(searched) or '(none)'}")
+        return ({b: sorted(v) for b, v in sorted(merged.items())}, primary)
 
     def _radius_hit(self):
         config = self.experiment_manager.current_config or {}
@@ -496,9 +539,12 @@ class RefinementWidget(QWidget):
         ``basename`` is typically ``{tomogram}_{component}`` (e.g. ``TE1_IMM``).
         Each basename gets its own spinbox so tomograms can accept different steps.
         """
-        pat = re.compile(r'^(?P<base>.+)_refined_iter(?P<n>\d+)\.surface\.vtp$')
+        pat = re.compile(
+            r'^(?P<base>.+)_refined_iter(?P<n>\d+)\.surface\.vtp$', re.IGNORECASE)
         surfaces = {}
-        for p in work_dir.glob('*_refined_iter*.surface.vtp'):
+        for p in work_dir.iterdir():
+            if not p.is_file():
+                continue
             m = pat.match(p.name)
             if not m:
                 continue
@@ -521,9 +567,9 @@ class RefinementWidget(QWidget):
         self._clear_preview()
         self.accept_container.clear()
         self._surface_steps = {}
+        self._resolved_work_dir = None
 
-        work_dir = self._resolve_work_dir()
-        found = self._discover_refined_surfaces(work_dir) if work_dir else {}
+        found, self._resolved_work_dir = self._discover_refined_surfaces_all()
         if not found:
             self.accept_container.append(widgets.Label(
                 value='No refined iterations found. Run refinement, then Refresh.'))
@@ -601,7 +647,7 @@ class RefinementWidget(QWidget):
 
         self._clear_preview()
 
-        work_dir = self._resolve_work_dir()
+        work_dir = self._resolved_work_dir or self._resolve_work_dir()
         if work_dir is None:
             QMessageBox.warning(self, "Preview Failed", "Could not resolve work dir.")
             return
@@ -773,7 +819,7 @@ class RefinementWidget(QWidget):
                                 "No refined surfaces found. Run refinement, then Refresh.")
             return
 
-        work_dir = self._resolve_work_dir()
+        work_dir = self._resolved_work_dir or self._resolve_work_dir()
         if work_dir is None:
             QMessageBox.warning(self, "No Work Directory",
                                 "Could not resolve the experiment output directory.")

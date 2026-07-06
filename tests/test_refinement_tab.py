@@ -154,6 +154,39 @@ class TestRefinementWidget:
         assert set(w._surface_steps) == {"t_IMM"}
         assert w._surface_steps["t_IMM"].value == 6
 
+    def test_refresh_finds_relative_config_work_dir(self, qapp, mock_experiment_manager, tmp_path):
+        """Config work_dir like results/ must resolve against exp_dir, not cwd."""
+        w = self._make_widget(qapp, mock_experiment_manager)
+        exp_parent = tmp_path / "projects"
+        exp_dir = exp_parent / "exp"
+        work_dir = exp_dir / "results"
+        work_dir.mkdir(parents=True)
+        (work_dir / "t_IMM_refined_iter6.surface.vtp").write_text("")
+        (exp_dir / "exp_config.yml").write_text("work_dir: results/\n")
+
+        mock_experiment_manager.work_dir.value = str(exp_parent)
+        mock_experiment_manager.experiment_name.currentText.return_value = "exp"
+        mock_experiment_manager.current_config = {"work_dir": "results/"}
+
+        w._refresh_accept_components()
+        assert "t_IMM" in w._surface_steps
+
+    def test_refresh_when_work_dir_field_is_experiment_dir(self, qapp, mock_experiment_manager, tmp_path):
+        """Work-dir field may point at the experiment folder, not its parent."""
+        w = self._make_widget(qapp, mock_experiment_manager)
+        exp_dir = tmp_path / "myexp"
+        work_dir = exp_dir / "results"
+        work_dir.mkdir(parents=True)
+        (work_dir / "TE1_OMM_refined_iter3.surface.vtp").write_text("")
+        (exp_dir / "config.yml").write_text("work_dir: results/\n")
+
+        mock_experiment_manager.work_dir.value = str(exp_dir)
+        mock_experiment_manager.experiment_name.currentText.return_value = "myexp"
+        mock_experiment_manager.current_config = {"work_dir": "results/"}
+
+        w._refresh_accept_components()
+        assert set(w._surface_steps) == {"TE1_OMM"}
+
     def test_accept_worker_runs_one_call_per_surface(self, qapp, mock_experiment_manager, tmp_path):
         w = self._make_widget(qapp, mock_experiment_manager)
         work_dir = self._setup_refined(w, mock_experiment_manager, tmp_path, [])

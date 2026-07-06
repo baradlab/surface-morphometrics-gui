@@ -487,3 +487,10 @@ class TestResolveWorkDir:
         exp.mkdir()
         (exp / "exp_config.yml").write_text("x")  # config alone is not an output
         assert resolve_work_dir(exp) == exp / "results"
+
+    def test_resolve_config_work_dir_relative(self, tmp_path):
+        from utils.script_resolver import resolve_config_work_dir
+        exp = tmp_path / "exp"
+        exp.mkdir()
+        out = resolve_config_work_dir("results/", exp)
+        assert out == (exp / "results").resolve()

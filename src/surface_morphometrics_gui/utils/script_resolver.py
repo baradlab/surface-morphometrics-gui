@@ -58,6 +58,48 @@ def _has_pipeline_outputs(directory):
                for pattern in _OUTPUT_MARKERS)
 
 
+def resolve_config_work_dir(work_dir_value, exp_dir):
+    """Normalize ``work_dir`` from a config, resolving relative paths.
+
+    Config files may store a relative ``work_dir`` (e.g. ``results/``); interpret
+    that relative to the experiment directory, not the process cwd.
+    """
+    if not work_dir_value:
+        return None
+    p = Path(str(work_dir_value).strip())
+    if not p.is_absolute():
+        p = (Path(exp_dir) / p).resolve()
+    return p
+
+
+def work_dir_search_candidates(config, exp_dir):
+    """Ordered unique directories that may hold pipeline outputs for *exp_dir*."""
+    exp_dir = Path(exp_dir)
+    ordered = []
+    cfg_work = (config or {}).get('work_dir')
+    if cfg_work:
+        resolved = resolve_config_work_dir(cfg_work, exp_dir)
+        if resolved is not None:
+            ordered.append(resolved)
+    ordered.extend([
+        resolve_work_dir(exp_dir),
+        exp_dir,
+        exp_dir / 'results',
+    ])
+    seen = set()
+    out = []
+    for d in ordered:
+        if d is None:
+            continue
+        p = Path(d)
+        key = str(p.resolve()) if p.exists() else str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return out
+
+
 def resolve_work_dir(exp_dir):
     """The directory the pipeline reads from and writes to for an experiment.
 

@@ -862,6 +862,8 @@ class ExperimentManager(QWidget):
         idx = self.experiment_name.findText(plan.exp_name)
         if idx >= 0:
             self.experiment_name.setCurrentIndex(idx)
+        # Ensure job tabs see the adopted config even if the index didn't change.
+        self._load_existing_experiment_config()
 
         if result.failed_moves:
             detail = "\n".join(f"  {s.name}: {msg}" for s, msg in result.failed_moves[:5])
