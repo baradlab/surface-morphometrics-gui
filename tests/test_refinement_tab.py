@@ -127,6 +127,33 @@ class TestRefinementWidget:
         assert w._surface_steps == {}
         assert not w.accept_btn.isEnabled()
 
+    def test_refresh_uses_saved_config_work_dir(self, qapp, mock_experiment_manager, tmp_path):
+        """After resume, discovery must honor config work_dir, not re-guess paths."""
+        import os
+        w = self._make_widget(qapp, mock_experiment_manager)
+        exp_parent = tmp_path / "projects"
+        exp_parent.mkdir()
+        exp_dir = exp_parent / "exp"
+        exp_dir.mkdir()
+        work_dir = exp_dir / "results"
+        work_dir.mkdir()
+        for name in [
+            "t_IMM_refined_iter1.surface.vtp",
+            "t_IMM_refined_iter6.surface.vtp",
+        ]:
+            (work_dir / name).write_text("")
+        (exp_dir / "exp_config.yml").write_text("work_dir: placeholder\n")
+
+        mock_experiment_manager.work_dir.value = str(exp_parent)
+        mock_experiment_manager.experiment_name.currentText.return_value = "exp"
+        mock_experiment_manager.current_config = {
+            "work_dir": str(work_dir) + os.sep,
+        }
+
+        w._refresh_accept_components()
+        assert set(w._surface_steps) == {"t_IMM"}
+        assert w._surface_steps["t_IMM"].value == 6
+
     def test_accept_worker_runs_one_call_per_surface(self, qapp, mock_experiment_manager, tmp_path):
         w = self._make_widget(qapp, mock_experiment_manager)
         work_dir = self._setup_refined(w, mock_experiment_manager, tmp_path, [])

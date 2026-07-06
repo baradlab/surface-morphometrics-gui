@@ -46,7 +46,8 @@ def cli_work_dir(results_directory):
 # Filenames the pipeline produces at any stage — used to detect whether a
 # directory already holds pipeline outputs.
 _OUTPUT_MARKERS = ("*.surface.vtp", "*.AVV_rh*.gt", "*.AVV_rh*.vtp",
-                   "*.AVV_rh*.csv", "*.ply", "*.xyz")
+                   "*.AVV_rh*.csv", "*.ply", "*.xyz",
+                   "*_refined_iter*.surface.vtp")
 
 
 def _has_pipeline_outputs(directory):

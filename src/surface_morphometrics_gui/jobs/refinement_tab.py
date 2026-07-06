@@ -263,11 +263,50 @@ class RefinementWidget(QWidget):
             print(f"[RefinementWidget] Error in _on_config_loaded: {e}")
 
     def _config_path(self):
-        exp_name = self.experiment_manager.experiment_name.currentText()
+        exp_name = self.experiment_manager.experiment_name.currentText().strip()
         exp_dir = Path(self.experiment_manager.work_dir.value) / exp_name
         preferred = exp_dir / f"{exp_name}_config.yml"
         fallback = exp_dir / 'config.yml'
         return (preferred if preferred.exists() else fallback), exp_dir
+
+    def _resolve_work_dir(self):
+        """Directory where refinement outputs live for the loaded experiment.
+
+        On resume the saved config's ``work_dir`` is authoritative (set by
+        ExperimentManager when the experiment is loaded). Re-deriving from the
+        GUI parent path alone can miss files when layout or paths differ.
+        """
+        candidates = []
+        config = self.experiment_manager.current_config or {}
+        cfg_work = config.get('work_dir')
+        if cfg_work:
+            candidates.append(Path(str(cfg_work).rstrip(os.sep)))
+        try:
+            _, exp_dir = self._config_path()
+            candidates.append(resolve_work_dir(exp_dir))
+            candidates.append(exp_dir)
+        except Exception as e:
+            print(f"[RefinementWidget] Could not resolve experiment dir: {e}")
+
+        seen = set()
+        unique = []
+        for d in candidates:
+            if d is None:
+                continue
+            p = Path(d)
+            key = str(p.resolve()) if p.exists() else str(p)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(p)
+
+        for p in unique:
+            if p.is_dir() and list(p.glob('*_refined_iter*.surface.vtp')):
+                return p
+        for p in unique:
+            if p.is_dir():
+                return p
+        return None
 
     def _radius_hit(self):
         config = self.experiment_manager.current_config or {}
@@ -338,7 +377,11 @@ class RefinementWidget(QWidget):
             return
 
         config_path, exp_dir = self._config_path()
-        work_dir = resolve_work_dir(exp_dir)
+        work_dir = self._resolve_work_dir()
+        if work_dir is None:
+            QMessageBox.warning(self, "No Work Directory",
+                                "Could not resolve the experiment output directory.")
+            return
         radius_hit = self._radius_hit()
         if not list(work_dir.glob(f'*.AVV_rh{radius_hit}.gt')):
             QMessageBox.warning(
@@ -479,12 +522,7 @@ class RefinementWidget(QWidget):
         self.accept_container.clear()
         self._surface_steps = {}
 
-        try:
-            _, exp_dir = self._config_path()
-            work_dir = resolve_work_dir(exp_dir)
-        except Exception:
-            work_dir = None
-
+        work_dir = self._resolve_work_dir()
         found = self._discover_refined_surfaces(work_dir) if work_dir else {}
         if not found:
             self.accept_container.append(widgets.Label(
@@ -563,11 +601,9 @@ class RefinementWidget(QWidget):
 
         self._clear_preview()
 
-        try:
-            _, exp_dir = self._config_path()
-            work_dir = resolve_work_dir(exp_dir)
-        except Exception as e:
-            QMessageBox.warning(self, "Preview Failed", f"Could not resolve work dir: {e}")
+        work_dir = self._resolve_work_dir()
+        if work_dir is None:
+            QMessageBox.warning(self, "Preview Failed", "Could not resolve work dir.")
             return
 
         self._preview_catalog = self._build_preview_catalog(work_dir)
@@ -737,7 +773,11 @@ class RefinementWidget(QWidget):
                                 "No refined surfaces found. Run refinement, then Refresh.")
             return
 
-        work_dir = resolve_work_dir(exp_dir)
+        work_dir = self._resolve_work_dir()
+        if work_dir is None:
+            QMessageBox.warning(self, "No Work Directory",
+                                "Could not resolve the experiment output directory.")
+            return
         choices = {b: sb.value for b, sb in self._surface_steps.items()}
         # Validate each chosen iteration exists for its surface before touching files.
         missing = [f"{b}: iteration {s}" for b, s in choices.items()
