@@ -8,12 +8,11 @@ import subprocess
 import threading
 from pathlib import Path
 from magicgui import widgets
-from qtpy.QtCore import QTimer
+from qtpy.QtCore import Qt, QTimer, Signal
 from magicgui.widgets import FloatRangeSlider, FloatSpinBox
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QSizePolicy, QScrollArea, QFileDialog, QMessageBox,
 )
-from qtpy.QtCore import Qt
 
 from ..utils.script_resolver import CLI_MISSING_MESSAGE, EXPORT_OBJ, resolve_cli_runner
 
@@ -67,6 +66,9 @@ def resolve_config_path(vtp_path, experiment_manager=None):
 
 
 class MeshViewer(QWidget):
+    # Marshals export results from the worker thread back to the Qt main thread.
+    _export_finished = Signal(bool, str, str, str, str)
+
     def __init__(self, viewer, experiment_manager=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.viewer = viewer
@@ -235,6 +237,7 @@ class MeshViewer(QWidget):
         self.contrast_max.changed.connect(self._on_contrast_max_changed)
         self.ao_enabled.changed.connect(self._on_ao_toggled)
         self.shading_selector.changed.connect(self._on_shading_changed)
+        self._export_finished.connect(self._finish_export_obj)
 
     def _on_load_mesh_clicked(self):
         """Open a file dialog and load the selected mesh file."""
@@ -634,7 +637,7 @@ class MeshViewer(QWidget):
                 '--vmin', str(job_data['vmin']),
                 '--vmax', str(job_data['vmax']),
             ]
-            print(f"Running: {' '.join(map(str, cmd))}")
+            print(f"Running: {' '.join(map(str, cmd))}", flush=True)
             result = subprocess.run(
                 cmd,
                 cwd=str(job_data['vtp_path'].parent),
@@ -643,44 +646,44 @@ class MeshViewer(QWidget):
                 check=False,
             )
             if result.stdout:
-                print(result.stdout.rstrip())
+                print(result.stdout.rstrip(), flush=True)
             if result.stderr:
-                print(result.stderr.rstrip())
+                print(result.stderr.rstrip(), flush=True)
 
             base = job_data['vtp_path'].stem
             feature = job_data['feature']
             out_dir = job_data['vtp_path'].parent
-            obj_path = out_dir / f"{base}_{feature}.obj"
-            mtl_path = out_dir / f"{base}_{feature}.mtl"
-            png_path = out_dir / f"{base}_{feature}.png"
+            obj_path = str(out_dir / f"{base}_{feature}.obj")
+            mtl_path = str(out_dir / f"{base}_{feature}.mtl")
+            png_path = str(out_dir / f"{base}_{feature}.png")
 
             if result.returncode != 0:
                 detail = (result.stderr or result.stdout or "Unknown error").strip()
-                QTimer.singleShot(
-                    0,
-                    lambda: self._finish_export_obj(False, detail, obj_path, mtl_path),
-                )
+                self._export_finished.emit(False, detail, obj_path, mtl_path, "")
                 return
 
-            QTimer.singleShot(
-                0,
-                lambda: self._finish_export_obj(True, "", obj_path, mtl_path, png_path),
-            )
+            print("Export done.", flush=True)
+            self._export_finished.emit(True, "", obj_path, mtl_path, png_path)
         except Exception as exc:
-            QTimer.singleShot(
-                0,
-                lambda: self._finish_export_obj(False, str(exc), None, None),
-            )
+            self._export_finished.emit(False, str(exc), "", "", "")
 
-    def _finish_export_obj(self, success, detail, obj_path, mtl_path, png_path=None):
-        self.export_obj_button.setText("Export to OBJ")
+    def _finish_export_obj(self, success, detail, obj_path, mtl_path, png_path=""):
         layer = self._find_active_surface_layer()
-        self._update_export_button_state(layer)
 
         if success:
+            self.export_obj_button.setText("Done")
+            self.export_obj_button.setEnabled(True)
+            self.stats_label.value = (
+                f"Export done.\n\n"
+                f"OBJ: {obj_path}\n"
+                f"MTL: {mtl_path}\n"
+                f"Texture: {png_path}"
+            )
+            QTimer.singleShot(2000, lambda: self.export_obj_button.setText("Export to OBJ"))
             QMessageBox.information(
                 self,
                 "Export complete",
+                "Done.\n\n"
                 "Colormapped surface exported:\n\n"
                 f"OBJ: {obj_path}\n"
                 f"MTL: {mtl_path}\n"
@@ -688,11 +691,16 @@ class MeshViewer(QWidget):
                 "The OBJ references the MTL; the MTL references the colormap PNG.",
             )
         else:
+            self.export_obj_button.setText("Export to OBJ")
+            self._update_export_button_state(layer)
             QMessageBox.critical(
                 self,
                 "Export failed",
                 f"Could not export surface to OBJ.\n\n{detail}",
             )
+            return
+
+        self._update_export_button_state(layer)
 
     def _find_active_surface_layer(self):
         """Find the active surface layer, falling back to any VTP surface layer."""
