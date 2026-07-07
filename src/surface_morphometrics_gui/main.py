@@ -97,7 +97,7 @@ def main():
         
         
         # Create mesh viewer widget
-        mesh_viewer = MeshViewer(viewer)
+        mesh_viewer = MeshViewer(viewer, experiment_manager=experiment_manager)
         
 
         # Setup and add dock widgets with proper sizing

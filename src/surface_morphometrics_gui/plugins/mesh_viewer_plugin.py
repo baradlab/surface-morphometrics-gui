@@ -5,7 +5,7 @@ class MeshViewerPlugin:
     def __init__(self, viewer, experiment_manager):
         self.viewer = viewer
         self.experiment_manager = experiment_manager
-        self.widget = MeshViewer(viewer)
+        self.widget = MeshViewer(viewer, experiment_manager=experiment_manager)
 
     @property
     def native(self):

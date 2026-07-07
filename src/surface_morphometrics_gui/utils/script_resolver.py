@@ -22,6 +22,7 @@ MEASURE_THICKNESS = "measure_thickness"
 # refine_mesh iterates, then accept_refinement commits a chosen iteration.
 REFINE_MESH = "refine_mesh"
 ACCEPT_REFINEMENT = "accept_refinement"
+EXPORT_OBJ = "export_obj"
 
 
 def results_dir(work_dir_field, exp_name):
