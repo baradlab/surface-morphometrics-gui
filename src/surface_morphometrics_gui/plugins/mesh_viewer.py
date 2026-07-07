@@ -252,8 +252,12 @@ class MeshViewer(QWidget):
 
         self._load_mesh_file(filepath)
 
-    def _load_mesh_file(self, filepath):
-        """Load a mesh file using VTK and add it to napari."""
+    def read_mesh_tuple(self, filepath):
+        """Read a mesh file with VTK and return ``(vertices, faces, values)``.
+
+        Pure I/O: no napari calls, so it can be used off the layer-creation path
+        (e.g. to swap a preview layer's data). Returns None on failure.
+        """
         ext = os.path.splitext(filepath)[1].lower()
 
         reader = None
@@ -267,7 +271,7 @@ class MeshViewer(QWidget):
             reader = vtk.vtkOBJReader()
         else:
             print(f"Unsupported file format: {ext}")
-            return
+            return None
 
         reader.SetFileName(filepath)
         reader.Update()
@@ -275,7 +279,7 @@ class MeshViewer(QWidget):
 
         if polydata is None or polydata.GetNumberOfPoints() == 0:
             print(f"Failed to load mesh from {filepath}")
-            return
+            return None
 
         # Extract vertices
         vtk_points = polydata.GetPoints()
@@ -285,7 +289,7 @@ class MeshViewer(QWidget):
         vtk_cells = polydata.GetPolys()
         if vtk_cells is None or vtk_cells.GetNumberOfCells() == 0:
             print(f"No polygon data in {filepath}")
-            return
+            return None
 
         cell_array = numpy_support.vtk_to_numpy(vtk_cells.GetData())
         # VTK cell array format: [n_verts, v0, v1, v2, n_verts, v0, v1, v2, ...]
@@ -296,20 +300,61 @@ class MeshViewer(QWidget):
 
         # Default scalar values (ones so AO can attenuate them)
         values = np.ones(len(vertices))
-        mesh_tuple = (vertices, faces, values)
+        return (vertices, faces, values)
 
-        name = os.path.splitext(os.path.basename(filepath))[0]
-        # Only tag VTP files as the source path; other formats (PLY, STL, OBJ)
-        # cannot be re-read by vtkXMLPolyDataReader and would cause an XML parse
-        # error at byte 0 when _initialize_vtp_layer tries to load them.
-        metadata = {'source_vtp_path': filepath} if ext == '.vtp' else {}
+    def _load_mesh_file(self, filepath, name=None, flat=False, reset_view=True):
+        """Load a mesh file using VTK and add it to napari.
+
+        flat=True loads the mesh as a matte gray surface for shape comparison:
+        it skips the per-vertex scalar auto-coloring (marks the layer already
+        initialized and omits ``source_vtp_path``), so the noisy scalar arrays
+        some VTPs carry don't paint the surface. Ambient occlusion still applies,
+        giving depth. Returns the created layer (or None on failure).
+
+        reset_view=False skips the camera reset — callers that load several
+        layers at once (e.g. preview) can reset the view a single time instead.
+        """
+        mesh_tuple = self.read_mesh_tuple(filepath)
+        if mesh_tuple is None:
+            return None
+
+        ext = os.path.splitext(filepath)[1].lower()
+
+        if name is None:
+            name = os.path.splitext(os.path.basename(filepath))[0]
+        add_kwargs = {'name': name}
+        if flat:
+            # Skip scalar auto-coloring (see docstring); show a matte gray surface.
+            add_kwargs['metadata'] = {'vtp_initialized': True}
+            add_kwargs['colormap'] = 'gray'
+        else:
+            # Only tag VTP files as the source path; other formats (PLY, STL, OBJ)
+            # cannot be re-read by vtkXMLPolyDataReader and would cause an XML parse
+            # error at byte 0 when _initialize_vtp_layer tries to load them.
+            add_kwargs['metadata'] = {'source_vtp_path': filepath} if ext == '.vtp' else {}
 
         # Surface layers require 3D display mode; switch automatically.
         if self.viewer.dims.ndisplay != 3:
             self.viewer.dims.ndisplay = 3
 
-        self.viewer.add_surface(mesh_tuple, name=name, metadata=metadata)
-        self.viewer.reset_view()
+        layer = self.viewer.add_surface(mesh_tuple, **add_kwargs)
+        if reset_view:
+            self.viewer.reset_view()
+        return layer
+
+    def update_surface_layer(self, layer, filepath, flat=True):
+        """Swap an existing surface layer's geometry to another mesh file.
+
+        Reads ``filepath`` via :meth:`read_mesh_tuple` and assigns the resulting
+        ``(vertices, faces, values)`` to ``layer.data`` so the on-screen surface
+        updates without creating a new layer (used to scrub preview iterations).
+        Returns the mesh tuple on success, or None on failure.
+        """
+        mesh_tuple = self.read_mesh_tuple(filepath)
+        if mesh_tuple is None:
+            return None
+        layer.data = mesh_tuple
+        return mesh_tuple
 
     def _is_vtp_surface_layer(self, layer):
         """Checks if a layer is a Surface derived from a VTP file."""

@@ -1,13 +1,16 @@
 import copy
 import os
+import re
 import subprocess
 import threading
+from collections import OrderedDict
 from pathlib import Path
 
 from magicgui import widgets
-from qtpy.QtCore import QTimer
+from qtpy.QtCore import Qt, QTimer
 from ruamel.yaml import YAML
 from qtpy.QtWidgets import (
+    QComboBox,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -23,6 +26,8 @@ from ..utils.script_resolver import (
     REFINE_MESH,
     ACCEPT_REFINEMENT,
     resolve_work_dir,
+    resolve_config_work_dir,
+    work_dir_search_candidates,
     cli_work_dir,
 )
 from ..widgets.job_status import JobStatusWidget
@@ -37,6 +42,13 @@ REFINE_OUTPUT_PATTERNS = [
     '*_refinement_stats.csv',
     '*_profile_evolution.png',
 ]
+
+# Above this many surfaces, previewing one napari layer per surface is too heavy,
+# so the tab switches to single-surface mode: a dropdown picks one basename and
+# only that surface's current iteration is shown.
+PREVIEW_ALL_THRESHOLD = 8
+# Cap on cached parsed meshes so scrubbing back is instant without unbounded RAM.
+PREVIEW_CACHE_MAX = 32
 
 
 class RefinementWidget(QWidget):
@@ -59,9 +71,24 @@ class RefinementWidget(QWidget):
     both before running.
     """
 
-    def __init__(self, experiment_manager):
+    def __init__(self, experiment_manager, mesh_viewer=None):
         super().__init__()
         self.experiment_manager = experiment_manager
+        # Optional MeshViewer used to preview refined iterations in napari before
+        # accepting one. None in headless/test paths — preview is then disabled.
+        self.mesh_viewer = mesh_viewer
+        # Lazy preview state. Rather than loading every iteration of every
+        # surface up front, we scan the work dir for paths only, then load the
+        # current spinbox iteration on demand and cache parsed meshes.
+        #   _preview_catalog:      basename -> {iter_n: Path}  (filesystem scan)
+        #   _preview_mesh_cache:   (basename, iter_n) -> mesh_tuple  (LRU-bounded)
+        #   _preview_layers:       basename -> napari layer (<=1 per surface,
+        #                          or exactly one total in large single-surface mode)
+        #   _preview_active_basename: the surface shown in large mode (else None)
+        self._preview_catalog = {}
+        self._preview_mesh_cache = OrderedDict()
+        self._preview_layers = {}
+        self._preview_active_basename = None
         self.is_running = False
 
         main_layout = QVBoxLayout()
@@ -145,16 +172,58 @@ class RefinementWidget(QWidget):
         # --- Accept an iteration (destructive: promotes one, removes the rest) ---
         inner_layout.addWidget(QLabel("<b>Accept Iteration</b>"))
         inner_layout.addWidget(QLabel(
-            "Promote one iteration to be the working surface (originals are backed\n"
-            "up). Inspect *_refinement_convergence.png first to pick the best one."))
-        accept = widgets.Container(layout='vertical', labels=True)
-        accept.native.layout().setSpacing(5)
-        accept.native.layout().setContentsMargins(3, 3, 3, 3)
-        self.accept_step_input = widgets.SpinBox(
-            value=1, min=1, max=50, label='Iteration to Accept')
-        accept.extend([self.accept_step_input])
-        inner_layout.addWidget(accept.native)
-        self.accept_btn = QPushButton('Accept Iteration')
+            "Promote one iteration per surface (one row per tomogram × membrane;\n"
+            "originals are backed up). Inspect *_refinement_convergence.png first;\n"
+            "each surface can converge at a different iteration."))
+        # One step spinbox per surface basename, rebuilt from *_refined_iter* files.
+        self.accept_container = widgets.Container(layout='vertical', labels=True)
+        self.accept_container.native.layout().setSpacing(5)
+        self.accept_container.native.layout().setContentsMargins(3, 3, 3, 3)
+        accept_scroll = QScrollArea()
+        accept_scroll.setWidgetResizable(True)
+        accept_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        accept_scroll.setFrameShape(QScrollArea.NoFrame)
+        accept_scroll.setWidget(self.accept_container.native)
+        accept_scroll.setMinimumHeight(80)
+        accept_scroll.setMaximumHeight(280)
+        inner_layout.addWidget(accept_scroll)
+        self._surface_steps = {}
+
+        self.refresh_btn = QPushButton('Refresh Surfaces')
+        self.refresh_btn.clicked.connect(self._refresh_accept_components)
+        inner_layout.addWidget(self.refresh_btn)
+
+        # Preview the refined iterations in napari before the destructive accept.
+        # The per-component spinbox above is the scrubber: the iteration it shows
+        # is the one Accept promotes. Only available when a MeshViewer was wired in.
+        if self.mesh_viewer is not None:
+            inner_layout.addWidget(QLabel(
+                "Preview loads each surface's current iteration as a napari surface;\n"
+                "scrub a spinbox — the shown iteration is the one Accept promotes for\n"
+                "that surface. With many surfaces, pick one below to preview at a time."))
+            # Large-mode surface picker: only one layer is shown at a time when
+            # there are more than PREVIEW_ALL_THRESHOLD surfaces. Hidden otherwise.
+            self.preview_combo_label = QLabel("Preview surface:")
+            self.preview_combo_label.setVisible(False)
+            inner_layout.addWidget(self.preview_combo_label)
+            self.preview_surface_combo = QComboBox()
+            self.preview_surface_combo.setVisible(False)
+            self.preview_surface_combo.currentTextChanged.connect(
+                self._on_preview_surface_changed)
+            inner_layout.addWidget(self.preview_surface_combo)
+            self.preview_btn = QPushButton('Preview Iterations')
+            self.preview_btn.clicked.connect(self._preview_iterations)
+            inner_layout.addWidget(self.preview_btn)
+            self.clear_preview_btn = QPushButton('Clear Preview')
+            self.clear_preview_btn.clicked.connect(self._clear_preview)
+            inner_layout.addWidget(self.clear_preview_btn)
+        else:
+            self.preview_btn = None
+            self.clear_preview_btn = None
+            self.preview_surface_combo = None
+            self.preview_combo_label = None
+
+        self.accept_btn = QPushButton('Accept Iterations')
         self.accept_btn.clicked.connect(self._accept_iteration)
         inner_layout.addWidget(self.accept_btn)
 
@@ -191,15 +260,96 @@ class RefinementWidget(QWidget):
             self.laplacian_input.value = refine.get('laplacian_iterations', 5)
             self.laplacian_lambda_input.value = refine.get('laplacian_lambda', 0.5)
             self.lowpass_input.value = refine.get('lowpass_sigma', 0)
+            self._refresh_accept_components()
         except Exception as e:
             print(f"[RefinementWidget] Error in _on_config_loaded: {e}")
 
+    def _resolve_exp_dir(self):
+        """Experiment directory from the manager's work-dir field and name.
+
+        The work-dir field is usually the parent of experiment folders, but
+        users sometimes point it directly at an experiment directory.
+        """
+        exp_name = self.experiment_manager.experiment_name.currentText().strip()
+        parent = Path(str(self.experiment_manager.work_dir.value or ''))
+        if not exp_name:
+            raise ValueError("No experiment selected")
+        if not parent:
+            raise ValueError("Work directory not set")
+
+        nested = parent / exp_name
+        if nested.is_dir() and (
+            (nested / 'config.yml').exists() or list(nested.glob('*_config.yml'))
+        ):
+            return nested
+        if (parent / 'config.yml').exists() or list(parent.glob('*_config.yml')):
+            return parent
+        if parent.name == exp_name and parent.is_dir():
+            return parent
+        return nested
+
     def _config_path(self):
-        exp_name = self.experiment_manager.experiment_name.currentText()
-        exp_dir = Path(self.experiment_manager.work_dir.value) / exp_name
+        exp_name = self.experiment_manager.experiment_name.currentText().strip()
+        exp_dir = self._resolve_exp_dir()
         preferred = exp_dir / f"{exp_name}_config.yml"
         fallback = exp_dir / 'config.yml'
         return (preferred if preferred.exists() else fallback), exp_dir
+
+    def _iter_work_dir_candidates(self):
+        """Yield directories that may contain refinement iteration surfaces."""
+        config = self.experiment_manager.current_config or {}
+        try:
+            exp_dir = self._resolve_exp_dir()
+        except Exception as e:
+            print(f"[RefinementWidget] Could not resolve experiment dir: {e}")
+            exp_dir = None
+
+        if exp_dir is not None:
+            for d in work_dir_search_candidates(config, exp_dir):
+                yield d
+
+        # work_dir field may already be the experiment folder (not its parent).
+        raw = self.experiment_manager.work_dir.value
+        exp_name = self.experiment_manager.experiment_name.currentText().strip()
+        if raw and exp_name:
+            raw_p = Path(str(raw))
+            if raw_p.is_dir() and raw_p.name == exp_name:
+                for d in work_dir_search_candidates(config, raw_p):
+                    yield d
+
+    def _resolve_work_dir(self):
+        """Best directory for refinement outputs (first candidate with iter files)."""
+        _found, primary = self._discover_refined_surfaces_all()
+        if primary is not None:
+            return primary
+        for d in self._iter_work_dir_candidates():
+            if d.is_dir():
+                return d
+        return None
+
+    def _discover_refined_surfaces_all(self):
+        """Scan every plausible output dir; merge discoveries across layouts."""
+        merged = {}
+        primary = None
+        searched = []
+        for d in self._iter_work_dir_candidates():
+            key = str(d.resolve()) if d.exists() else str(d)
+            if key in searched:
+                continue
+            searched.append(key)
+            if not d.is_dir():
+                print(f"[RefinementWidget] Skip (not a dir): {d}")
+                continue
+            part = self._discover_refined_surfaces(d)
+            n_files = sum(len(v) for v in part.values())
+            print(f"[RefinementWidget] Scan {d}: {n_files} refined iteration(s)")
+            if part and primary is None:
+                primary = d
+            for basename, iters in part.items():
+                merged.setdefault(basename, set()).update(iters)
+        if not merged:
+            print(f"[RefinementWidget] No refined iterations under: {', '.join(searched) or '(none)'}")
+        return ({b: sorted(v) for b, v in sorted(merged.items())}, primary)
 
     def _radius_hit(self):
         config = self.experiment_manager.current_config or {}
@@ -270,7 +420,11 @@ class RefinementWidget(QWidget):
             return
 
         config_path, exp_dir = self._config_path()
-        work_dir = resolve_work_dir(exp_dir)
+        work_dir = self._resolve_work_dir()
+        if work_dir is None:
+            QMessageBox.warning(self, "No Work Directory",
+                                "Could not resolve the experiment output directory.")
+            return
         radius_hit = self._radius_hit()
         if not list(work_dir.glob(f'*.AVV_rh{radius_hit}.gt')):
             QMessageBox.warning(
@@ -311,6 +465,8 @@ class RefinementWidget(QWidget):
         self.is_running = True
         self.submit_btn.enabled = False
         self.accept_btn.setEnabled(False)
+        if self.preview_btn is not None:
+            self.preview_btn.setEnabled(False)
         self.status.update_status('Starting...')
         self.status.update_progress(0)
         threading.Thread(target=self._run_refinement_worker, args=(job_data,), daemon=True).start()
@@ -364,6 +520,7 @@ class RefinementWidget(QWidget):
             self.status.update_status(
                 'Refinement complete. Inspect *_refinement_convergence.png, then accept an iteration.')
             print("===== Mesh refinement complete. =====")
+            QTimer.singleShot(0, self._refresh_accept_components)
 
         except Exception as e:
             self.status.update_status(f'Error: {e}')
@@ -374,6 +531,275 @@ class RefinementWidget(QWidget):
             QTimer.singleShot(0, self._job_cleanup)
 
     # ----- Accept an iteration -----
+
+    def _discover_refined_surfaces(self, work_dir):
+        """Map surface basename -> sorted list of available iteration numbers.
+
+        Refined surfaces are named ``{basename}_refined_iter{N}.surface.vtp`` where
+        ``basename`` is typically ``{tomogram}_{component}`` (e.g. ``TE1_IMM``).
+        Each basename gets its own spinbox so tomograms can accept different steps.
+        """
+        pat = re.compile(
+            r'^(?P<base>.+)_refined_iter(?P<n>\d+)\.surface\.vtp$', re.IGNORECASE)
+        surfaces = {}
+        for p in work_dir.iterdir():
+            if not p.is_file():
+                continue
+            m = pat.match(p.name)
+            if not m:
+                continue
+            surfaces.setdefault(m.group('base'), set()).add(int(m.group('n')))
+        return {b: sorted(v) for b, v in sorted(surfaces.items())}
+
+    @staticmethod
+    def _basename_filters(basename):
+        """Split ``{tomogram}_{component}`` for ``accept_refinement`` CLI filters."""
+        component = basename.rsplit('_', 1)[-1]
+        tomogram = basename[:-(len(component) + 1)]
+        return tomogram, component
+
+    def _refresh_accept_components(self):
+        """Rebuild the per-surface step spinboxes from the refined files on disk."""
+        # Preserve current selections across a refresh so a rescan doesn't reset them.
+        prev = {b: sb.value for b, sb in self._surface_steps.items()}
+        # The file set is about to change (refine/accept just ran); drop stale
+        # preview layers so they can't outlive the iterations they represent.
+        self._clear_preview()
+        self.accept_container.clear()
+        self._surface_steps = {}
+        self._resolved_work_dir = None
+
+        found, self._resolved_work_dir = self._discover_refined_surfaces_all()
+        if not found:
+            self.accept_container.append(widgets.Label(
+                value='No refined iterations found. Run refinement, then Refresh.'))
+            self.accept_btn.setEnabled(False)
+            if self.preview_btn is not None:
+                self.preview_btn.setEnabled(False)
+            self._populate_preview_combo()
+            return
+
+        for basename, iters in found.items():
+            lo, hi = iters[0], iters[-1]
+            # Default to the final iteration (usually the converged one); keep the
+            # user's prior pick if it's still in range.
+            default = min(max(prev.get(basename, hi), lo), hi)
+            sb = widgets.SpinBox(value=default, min=lo, max=hi,
+                                 label=f'{basename}  (iters {lo}-{hi})')
+            # Scrubber: when a preview is loaded, changing the step shows that
+            # iteration's layer and hides the rest for this surface.
+            sb.changed.connect(lambda _=None, b=basename: self._on_step_changed(b))
+            self.accept_container.append(sb)
+            self._surface_steps[basename] = sb
+        self.accept_btn.setEnabled(not self.is_running)
+        if self.preview_btn is not None:
+            self.preview_btn.setEnabled(not self.is_running)
+        self._populate_preview_combo()
+
+    # ----- Preview iterations in napari -----
+
+    def _populate_preview_combo(self):
+        """Refill the large-mode surface picker and show it only when needed."""
+        if self.preview_surface_combo is None:
+            return
+        large = len(self._surface_steps) > PREVIEW_ALL_THRESHOLD
+        # Block signals so refilling doesn't fire a spurious surface swap.
+        self.preview_surface_combo.blockSignals(True)
+        self.preview_surface_combo.clear()
+        self.preview_surface_combo.addItems(list(self._surface_steps))
+        self.preview_surface_combo.blockSignals(False)
+        self.preview_surface_combo.setVisible(large)
+        if self.preview_combo_label is not None:
+            self.preview_combo_label.setVisible(large)
+
+    def _build_preview_catalog(self, work_dir):
+        """Scan the work dir for each surface's iteration files (paths only).
+
+        Returns ``{basename: {iter_n: Path}}`` including iter0 (the original
+        ``{basename}.surface.vtp``) when present. No VTK parsing happens here.
+        """
+        pat = re.compile(r'^(?P<base>.+)_refined_iter(?P<n>\d+)\.surface\.vtp$')
+        catalog = {}
+        for basename in self._surface_steps:
+            iters = {}
+            for p in sorted(work_dir.glob(f'{basename}_refined_iter*.surface.vtp')):
+                m = pat.match(p.name)
+                if not m or m.group('base') != basename:
+                    continue
+                iters[int(m.group('n'))] = p
+            orig = work_dir / f'{basename}.surface.vtp'
+            if orig.exists():
+                iters[0] = orig
+            if iters:
+                catalog[basename] = iters
+        return catalog
+
+    def _preview_iterations(self):
+        """Preview the current iteration of each surface as a napari layer.
+
+        Small datasets (<= PREVIEW_ALL_THRESHOLD surfaces) get one layer per
+        surface, each showing its spinbox iteration. Larger datasets show a
+        single surface at a time, chosen by the picker combo. Only the shown
+        iterations are parsed; scrubbing swaps layer data from the mesh cache.
+        """
+        if self.mesh_viewer is None or not self._surface_steps:
+            return
+
+        self._clear_preview()
+
+        work_dir = self._resolved_work_dir or self._resolve_work_dir()
+        if work_dir is None:
+            QMessageBox.warning(self, "Preview Failed", "Could not resolve work dir.")
+            return
+
+        self._preview_catalog = self._build_preview_catalog(work_dir)
+        if not self._preview_catalog:
+            QMessageBox.information(
+                self, "Nothing to Preview",
+                "No refined iteration surfaces were found for the current surfaces.")
+            return
+
+        if len(self._surface_steps) > PREVIEW_ALL_THRESHOLD:
+            # Single-surface mode: load only the picked (or first) surface.
+            basename = None
+            if self.preview_surface_combo is not None:
+                basename = self.preview_surface_combo.currentText() or None
+            if basename not in self._preview_catalog:
+                basename = next(iter(self._preview_catalog))
+            self._preview_active_basename = basename
+            self._ensure_preview_layer(basename)
+        else:
+            self._preview_active_basename = None
+            for basename in self._surface_steps:
+                if basename in self._preview_catalog:
+                    self._ensure_preview_layer(basename)
+
+        self.mesh_viewer.viewer.reset_view()
+
+    def _current_iter(self, basename, iters):
+        """The spinbox iteration for a surface, clamped to available files."""
+        sb = self._surface_steps.get(basename)
+        n = sb.value if sb is not None else max(iters)
+        if n in iters:
+            return n
+        return min(iters, key=lambda k: abs(k - n))
+
+    def _get_preview_mesh(self, basename, n):
+        """Return the parsed mesh tuple for ``(basename, n)``, using the cache.
+
+        On a miss, reads the file via the viewer's ``read_mesh_tuple`` and stores
+        it, evicting the oldest entry once the cache exceeds PREVIEW_CACHE_MAX.
+        """
+        if self.mesh_viewer is None:
+            return None
+        key = (basename, n)
+        cached = self._preview_mesh_cache.get(key)
+        if cached is not None:
+            self._preview_mesh_cache.move_to_end(key)
+            return cached
+        path = self._preview_catalog.get(basename, {}).get(n)
+        if path is None:
+            return None
+        mesh_tuple = self.mesh_viewer.read_mesh_tuple(str(path))
+        if mesh_tuple is None:
+            return None
+        self._preview_mesh_cache[key] = mesh_tuple
+        while len(self._preview_mesh_cache) > PREVIEW_CACHE_MAX:
+            self._preview_mesh_cache.popitem(last=False)
+        return mesh_tuple
+
+    def _ensure_preview_layer(self, basename):
+        """Create the surface's preview layer if missing, else update its data."""
+        if self.mesh_viewer is None:
+            return
+        iters = self._preview_catalog.get(basename)
+        if not iters:
+            return
+        n = self._current_iter(basename, iters)
+        layer = self._preview_layers.get(basename)
+        if layer is None:
+            path = iters[n]
+            name = f'refine-preview:{basename}:iter{n}'
+            layer = self._load_preview_layer(str(path), name)
+            if layer is not None:
+                self._preview_layers[basename] = layer
+        else:
+            self._apply_iter_to_layer(basename, layer, n)
+
+    def _load_preview_layer(self, path, name):
+        """Load a .vtp as a flat gray preview surface and return the layer.
+
+        Loaded flat (no per-vertex scalar coloring) so previews show shape, not
+        the noisy scalar arrays some refined surfaces carry. ``reset_view`` is
+        skipped so preview resets the camera once, after all layers are loaded."""
+        try:
+            return self.mesh_viewer._load_mesh_file(
+                path, name=name, flat=True, reset_view=False)
+        except Exception as e:
+            print(f"[RefinementWidget] Failed to preview {path}: {e}")
+            return None
+
+    def _apply_iter_to_layer(self, basename, layer, n):
+        """Swap an existing preview layer's geometry to iteration ``n``."""
+        mesh_tuple = self._get_preview_mesh(basename, n)
+        if mesh_tuple is None:
+            return
+        try:
+            layer.data = mesh_tuple
+            layer.name = f'refine-preview:{basename}:iter{n}'
+        except Exception as e:
+            print(f"[RefinementWidget] Failed to update preview {basename}: {e}")
+
+    def _on_preview_surface_changed(self, basename):
+        """Combo callback: swap the single previewed surface in large mode."""
+        if not basename or not self._preview_catalog:
+            return
+        if len(self._surface_steps) <= PREVIEW_ALL_THRESHOLD:
+            return
+        self._set_active_preview_surface(basename)
+
+    def _set_active_preview_surface(self, basename):
+        """Show ``basename`` as the sole preview layer (single-surface mode)."""
+        if self.mesh_viewer is None or basename not in self._preview_catalog:
+            return
+        self._remove_preview_layers()
+        self._preview_active_basename = basename
+        self._ensure_preview_layer(basename)
+        self.mesh_viewer.viewer.reset_view()
+
+    def _on_step_changed(self, basename):
+        """Update the surface's layer data to its newly selected iteration."""
+        if self.mesh_viewer is None or not self._preview_catalog:
+            return
+        # In single-surface mode only the active surface has a layer.
+        if (self._preview_active_basename is not None
+                and basename != self._preview_active_basename):
+            return
+        layer = self._preview_layers.get(basename)
+        iters = self._preview_catalog.get(basename)
+        if layer is None or not iters:
+            return
+        n = self._current_iter(basename, iters)
+        self._apply_iter_to_layer(basename, layer, n)
+
+    def _remove_preview_layers(self):
+        """Remove the napari layers we created, keeping catalog/cache intact."""
+        if self.mesh_viewer is not None:
+            layers = self.mesh_viewer.viewer.layers
+            for layer in self._preview_layers.values():
+                try:
+                    if layer in layers:
+                        layers.remove(layer)
+                except Exception:
+                    pass
+        self._preview_layers = {}
+
+    def _clear_preview(self):
+        """Remove preview layers and drop the catalog/cache/active selection."""
+        self._remove_preview_layers()
+        self._preview_catalog = {}
+        self._preview_mesh_cache.clear()
+        self._preview_active_basename = None
 
     def _accept_iteration(self):
         if self.is_running:
@@ -388,21 +814,33 @@ class RefinementWidget(QWidget):
             QMessageBox.warning(self, "No Config", f"Config not found: {config_path}")
             return
 
-        step = self.accept_step_input.value
-        work_dir = resolve_work_dir(exp_dir)
-        if not list(work_dir.glob(f'*_refined_iter{step}.surface.vtp')):
-            QMessageBox.warning(
-                self, "No Such Iteration",
-                f"No refined surfaces for iteration {step} found in {work_dir}.\n"
-                "Run refinement first, or pick an iteration that was produced.")
+        if not self._surface_steps:
+            QMessageBox.warning(self, "No Surfaces",
+                                "No refined surfaces found. Run refinement, then Refresh.")
             return
 
+        work_dir = self._resolved_work_dir or self._resolve_work_dir()
+        if work_dir is None:
+            QMessageBox.warning(self, "No Work Directory",
+                                "Could not resolve the experiment output directory.")
+            return
+        choices = {b: sb.value for b, sb in self._surface_steps.items()}
+        # Validate each chosen iteration exists for its surface before touching files.
+        missing = [f"{b}: iteration {s}" for b, s in choices.items()
+                   if not (work_dir / f'{b}_refined_iter{s}.surface.vtp').exists()]
+        if missing:
+            QMessageBox.warning(
+                self, "No Such Iteration",
+                "These selections have no refined surface:\n  " + "\n  ".join(missing))
+            return
+
+        summary = "\n".join(f"  {b}: iteration {s}" for b, s in choices.items())
         confirm = QMessageBox.question(
-            self, "Accept Iteration",
-            f"Promote iteration {step} to be the working surface?\n\n"
-            "The original surfaces are backed up (*.orig.bak), but the other "
-            "refinement iterations and intermediates will be removed. This cannot "
-            "be undone from the GUI.",
+            self, "Accept Iterations",
+            f"Promote these iterations to be the working surfaces?\n\n{summary}\n\n"
+            "Originals are backed up (*.orig.bak), but the other refinement "
+            "iterations and intermediates will be removed. This cannot be undone "
+            "from the GUI.",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if confirm != QMessageBox.Yes:
             return
@@ -412,33 +850,46 @@ class RefinementWidget(QWidget):
             QMessageBox.critical(self, "morphometrics CLI not found", CLI_MISSING_MESSAGE)
             return
 
-        job_data = {'runner': runner, 'config_path': config_path, 'step': step}
+        job_data = {'runner': runner, 'config_path': config_path, 'choices': choices}
         self.is_running = True
         self.submit_btn.enabled = False
         self.accept_btn.setEnabled(False)
-        self.status.update_status(f'Accepting iteration {step}...')
+        if self.preview_btn is not None:
+            self.preview_btn.setEnabled(False)
+        self.status.update_status('Accepting iterations...')
         threading.Thread(target=self._accept_worker, args=(job_data,), daemon=True).start()
 
     def _accept_worker(self, job_data):
         try:
             runner = job_data['runner']
             config_path = job_data['config_path']
-            step = job_data['step']
+            choices = job_data['choices']
             work_dir = resolve_work_dir(Path(config_path).parent).resolve()
 
-            cmd = runner + [ACCEPT_REFINEMENT, str(config_path), str(step)]
-            print(f"--- Accepting refinement: {' '.join(map(str, cmd))} ---")
-            try:
-                subprocess.run(cmd, cwd=work_dir, check=True, text=True)
-            except subprocess.CalledProcessError:
-                self.status.update_status('Error: accept_refinement failed. See terminal.')
-                print("[ERROR] accept_refinement failed. Check the terminal output.")
-                return
+            # One accept_refinement call per surface basename, scoped with
+            # --tomogram and --component so each tomogram×membrane can pick a
+            # different iteration without affecting the others.
+            failed = []
+            for basename, step in choices.items():
+                tomogram, component = self._basename_filters(basename)
+                cmd = runner + [ACCEPT_REFINEMENT, str(config_path), str(step),
+                                '--tomogram', tomogram, '--component', component]
+                print(f"--- Accepting refinement: {' '.join(map(str, cmd))} ---")
+                try:
+                    subprocess.run(cmd, cwd=work_dir, check=True, text=True)
+                except subprocess.CalledProcessError:
+                    failed.append(basename)
+                    print(f"[ERROR] accept_refinement failed for {basename}.")
 
-            self.status.update_status(
-                f'Accepted iteration {step}. If it was a lightweight (xcorr) iteration, '
-                're-run Curvature before distances.')
-            print(f"===== Accepted refinement iteration {step}. =====")
+            if failed:
+                self.status.update_status(
+                    f"Error accepting: {', '.join(failed)}. See terminal.")
+            else:
+                accepted = ", ".join(f"{b}={s}" for b, s in choices.items())
+                self.status.update_status(
+                    f'Accepted {accepted}. If any was a lightweight (xcorr) iteration, '
+                    're-run Curvature before distances.')
+                print(f"===== Accepted refinement: {accepted}. =====")
 
         except Exception as e:
             self.status.update_status(f'Error: {e}')
@@ -446,9 +897,12 @@ class RefinementWidget(QWidget):
             import traceback
             traceback.print_exc()
         finally:
+            QTimer.singleShot(0, self._refresh_accept_components)
             QTimer.singleShot(0, self._job_cleanup)
 
     def _job_cleanup(self):
         self.submit_btn.enabled = True
-        self.accept_btn.setEnabled(True)
+        self.accept_btn.setEnabled(bool(self._surface_steps))
+        if self.preview_btn is not None:
+            self.preview_btn.setEnabled(bool(self._surface_steps))
         self.is_running = False
