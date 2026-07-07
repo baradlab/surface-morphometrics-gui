@@ -83,12 +83,11 @@ def main():
         # Setup responsive layout
         setup_responsive_layout(viewer)
         
-        # Create mesh viewer widget (before RefinementWidget, which reuses it to
-        # preview refined iterations in napari before accepting one).
-        mesh_viewer = MeshViewer(viewer)
-
         # Create widgets
         experiment_manager = ExperimentManager(viewer)
+        # Create mesh viewer widget (before RefinementWidget, which reuses it to
+        # preview refined iterations in napari before accepting one).
+        mesh_viewer = MeshViewer(viewer, experiment_manager=experiment_manager)
         mesh_widget = MeshGenerationWidget(experiment_manager)
         pycurv_widget = PyCurvWidget(experiment_manager=experiment_manager)
         refinement_widget = RefinementWidget(experiment_manager, mesh_viewer=mesh_viewer)
@@ -98,8 +97,6 @@ def main():
         # (Mesh completion connection set after dock widgets are created below)
         # Create tomoslice plugin
         tomoslice = TomoslicePlugin(viewer, experiment_manager)
-
-
         # Setup and add dock widgets with proper sizing
         dw1 = viewer.window.add_dock_widget(experiment_manager, name='Experiment Manager', area='right')
         dw2 = viewer.window.add_dock_widget(mesh_widget, name='Surface Mesh', area='right')

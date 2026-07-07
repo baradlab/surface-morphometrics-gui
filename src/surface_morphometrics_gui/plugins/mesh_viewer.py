@@ -4,11 +4,17 @@ import numpy as np
 from napari.layers import Surface
 import os
 import glob
+import subprocess
+import threading
+from pathlib import Path
 from magicgui import widgets
-from qtpy.QtCore import QTimer
+from qtpy.QtCore import Qt, QTimer, Signal
 from magicgui.widgets import FloatRangeSlider, FloatSpinBox
-from qtpy.QtWidgets import QWidget, QVBoxLayout, QPushButton, QSizePolicy, QScrollArea, QFileDialog
-from qtpy.QtCore import Qt
+from qtpy.QtWidgets import (
+    QWidget, QVBoxLayout, QPushButton, QSizePolicy, QScrollArea, QFileDialog, QMessageBox,
+)
+
+from ..utils.script_resolver import CLI_MISSING_MESSAGE, EXPORT_OBJ, resolve_cli_runner
 
 # We implement our own camera-following lighting directly on vispy's
 # ShadingFilter rather than using napari-threedee's LightingControl,
@@ -23,10 +29,50 @@ except ImportError:
     print("Warning: libigl not available for ambient occlusion")
 
 
+def export_feature_name(active_property):
+    """Map GUI property names (Cell_/Point_ prefixes) to export_obj feature names."""
+    if active_property.startswith('Cell_'):
+        return active_property[5:]
+    if active_property.startswith('Point_'):
+        return active_property[6:]
+    return active_property
+
+
+def resolve_config_path(vtp_path, experiment_manager=None):
+    """Find the experiment config.yml for a loaded VTP file."""
+    if experiment_manager is not None:
+        work_dir = getattr(experiment_manager.work_dir, 'value', None)
+        exp_name = experiment_manager.experiment_name.currentText().strip()
+        if work_dir and exp_name:
+            exp_dir = Path(work_dir) / exp_name
+            preferred = exp_dir / f"{exp_name}_config.yml"
+            if preferred.is_file():
+                return preferred
+            fallback = exp_dir / "config.yml"
+            if fallback.is_file():
+                return fallback
+
+    vtp_path = Path(vtp_path).resolve()
+    for directory in (vtp_path.parent, vtp_path.parent.parent):
+        if not directory.is_dir():
+            continue
+        named = sorted(directory.glob("*_config.yml"))
+        if named:
+            return named[0]
+        fallback = directory / "config.yml"
+        if fallback.is_file():
+            return fallback
+    return None
+
+
 class MeshViewer(QWidget):
-    def __init__(self, viewer, *args, **kwargs):
+    # Marshals export results from the worker thread back to the Qt main thread.
+    _export_finished = Signal(bool, str, str, str, str)
+
+    def __init__(self, viewer, experiment_manager=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.viewer = viewer
+        self.experiment_manager = experiment_manager
 
         # Initialize automatic lighting and ambient occlusion
         self._initialize_automatic_lighting_ao()
@@ -123,6 +169,16 @@ class MeshViewer(QWidget):
         self.contrast_container.append(self.contrast_minmax_row)
         self.contrast_container.visible = False
 
+        self.export_obj_button = QPushButton("Export to OBJ")
+        self.export_obj_button.setMinimumWidth(100)
+        self.export_obj_button.setFixedHeight(28)
+        self.export_obj_button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.export_obj_button.setEnabled(False)
+        self.export_obj_button.setToolTip(
+            "Export the current surface to a colormapped OBJ + MTL for Blender, ChimeraX, etc."
+        )
+        self.export_obj_button.clicked.connect(self._on_export_obj_clicked)
+
         self.stats_label = widgets.Label(value="No data loaded")
 
         # Build load mesh row
@@ -145,6 +201,10 @@ class MeshViewer(QWidget):
             self.stats_label,
             self.contrast_container,
         ])
+
+        export_row = widgets.Container(layout='horizontal')
+        export_row.native.layout().addWidget(self.export_obj_button)
+        self.controls_container.append(export_row)
 
         # Compact child widget internal margins while keeping outer spacing
         for i in range(self.controls_container.native.layout().count()):
@@ -177,6 +237,7 @@ class MeshViewer(QWidget):
         self.contrast_max.changed.connect(self._on_contrast_max_changed)
         self.ao_enabled.changed.connect(self._on_ao_toggled)
         self.shading_selector.changed.connect(self._on_shading_changed)
+        self._export_finished.connect(self._finish_export_obj)
 
     def _on_load_mesh_clicked(self):
         """Open a file dialog and load the selected mesh file."""
@@ -356,6 +417,7 @@ class MeshViewer(QWidget):
         self.property_selector.enabled = False
         self.colormap_selector.enabled = False
         self.auto_apply.enabled = False
+        self.export_obj_button.setEnabled(False)
 
     def _initialize_vtp_layer(self, layer):
         """Read VTP file once, cache data, and apply initial colormap."""
@@ -541,6 +603,149 @@ class MeshViewer(QWidget):
 
         self._update_statistics(layer)
         self._update_contrast_slider_state(layer)
+        self._update_export_button_state(layer)
+
+    def _can_export_obj(self, layer):
+        """Return True when the active layer can be exported via morphometrics export_obj."""
+        if not layer or not self._is_vtp_surface_layer(layer):
+            return False
+        active_property = layer.metadata.get('active_property')
+        if not active_property or active_property == 'solid_color':
+            return False
+        vtp_path = layer.metadata.get('vtp_path') or layer.metadata.get('source_vtp_path')
+        if not vtp_path or not os.path.exists(vtp_path):
+            return False
+        scalar_data = layer.metadata.get('vtp_scalar_data', {})
+        data = scalar_data.get(active_property)
+        if data is None or (hasattr(data, 'ndim') and data.ndim > 1):
+            return False
+        return True
+
+    def _update_export_button_state(self, layer=None):
+        if layer is None:
+            layer = self._find_active_surface_layer()
+        self.export_obj_button.setEnabled(self._can_export_obj(layer))
+
+    def _on_export_obj_clicked(self):
+        layer = self._find_active_surface_layer()
+        if not self._can_export_obj(layer):
+            QMessageBox.warning(
+                self,
+                "Cannot export",
+                "Load a quantified VTP surface, select a scalar property, and adjust the "
+                "colormap/contrast before exporting.",
+            )
+            return
+
+        runner = resolve_cli_runner()
+        if runner is None:
+            QMessageBox.critical(self, "morphometrics CLI not found", CLI_MISSING_MESSAGE)
+            return
+
+        vtp_path = Path(layer.metadata.get('vtp_path') or layer.metadata['source_vtp_path']).resolve()
+        config_path = resolve_config_path(vtp_path, self.experiment_manager)
+        if config_path is None:
+            QMessageBox.critical(
+                self,
+                "Config not found",
+                f"Could not find a config.yml for:\n{vtp_path}\n\n"
+                "Open the experiment in Experiment Manager or place config.yml next to the VTP.",
+            )
+            return
+
+        active_property = layer.metadata['active_property']
+        feature = export_feature_name(active_property)
+        cmap = self.colormap_selector.value
+        vmin, vmax = layer.contrast_limits
+
+        self.export_obj_button.setEnabled(False)
+        self.export_obj_button.setText("Exporting…")
+        job_data = {
+            'runner': runner,
+            'config_path': config_path,
+            'vtp_path': vtp_path,
+            'feature': feature,
+            'cmap': cmap,
+            'vmin': vmin,
+            'vmax': vmax,
+        }
+        threading.Thread(target=self._run_export_obj_worker, args=(job_data,), daemon=True).start()
+
+    def _run_export_obj_worker(self, job_data):
+        try:
+            cmd = job_data['runner'] + [
+                EXPORT_OBJ,
+                str(job_data['config_path']),
+                str(job_data['vtp_path']),
+                '--feature', job_data['feature'],
+                '--cmap', job_data['cmap'],
+                '--vmin', str(job_data['vmin']),
+                '--vmax', str(job_data['vmax']),
+            ]
+            print(f"Running: {' '.join(map(str, cmd))}", flush=True)
+            result = subprocess.run(
+                cmd,
+                cwd=str(job_data['vtp_path'].parent),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.stdout:
+                print(result.stdout.rstrip(), flush=True)
+            if result.stderr:
+                print(result.stderr.rstrip(), flush=True)
+
+            base = job_data['vtp_path'].stem
+            feature = job_data['feature']
+            out_dir = job_data['vtp_path'].parent
+            obj_path = str(out_dir / f"{base}_{feature}.obj")
+            mtl_path = str(out_dir / f"{base}_{feature}.mtl")
+            png_path = str(out_dir / f"{base}_{feature}.png")
+
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or "Unknown error").strip()
+                self._export_finished.emit(False, detail, obj_path, mtl_path, "")
+                return
+
+            print("Export done.", flush=True)
+            self._export_finished.emit(True, "", obj_path, mtl_path, png_path)
+        except Exception as exc:
+            self._export_finished.emit(False, str(exc), "", "", "")
+
+    def _finish_export_obj(self, success, detail, obj_path, mtl_path, png_path=""):
+        layer = self._find_active_surface_layer()
+
+        if success:
+            self.export_obj_button.setText("Done")
+            self.export_obj_button.setEnabled(True)
+            self.stats_label.value = (
+                f"Export done.\n\n"
+                f"OBJ: {obj_path}\n"
+                f"MTL: {mtl_path}\n"
+                f"Texture: {png_path}"
+            )
+            QTimer.singleShot(2000, lambda: self.export_obj_button.setText("Export to OBJ"))
+            QMessageBox.information(
+                self,
+                "Export complete",
+                "Done.\n\n"
+                "Colormapped surface exported:\n\n"
+                f"OBJ: {obj_path}\n"
+                f"MTL: {mtl_path}\n"
+                f"Texture: {png_path}\n\n"
+                "The OBJ references the MTL; the MTL references the colormap PNG.",
+            )
+        else:
+            self.export_obj_button.setText("Export to OBJ")
+            self._update_export_button_state(layer)
+            QMessageBox.critical(
+                self,
+                "Export failed",
+                f"Could not export surface to OBJ.\n\n{detail}",
+            )
+            return
+
+        self._update_export_button_state(layer)
 
     def _find_active_surface_layer(self):
         """Find the active surface layer, falling back to any VTP surface layer."""
@@ -796,6 +1001,7 @@ class MeshViewer(QWidget):
                 max_val = max(min(value[1], self.contrast_max.max), self.contrast_max.min)
                 self.contrast_min.value = min_val
                 self.contrast_max.value = max_val
+            self._update_export_button_state(layer)
 
     def _on_contrast_min_changed(self, value):
         layer = self.viewer.layers.selection.active
@@ -809,6 +1015,7 @@ class MeshViewer(QWidget):
                 clamped_min = max(min(min_val, self.contrast_slider.max), self.contrast_slider.min)
                 clamped_max = max(min(max_val, self.contrast_slider.max), self.contrast_slider.min)
                 self.contrast_slider.value = (clamped_min, clamped_max)
+            self._update_export_button_state(layer)
 
     def _on_contrast_max_changed(self, value):
         layer = self.viewer.layers.selection.active
@@ -822,6 +1029,7 @@ class MeshViewer(QWidget):
                 clamped_min = max(min(min_val, self.contrast_slider.max), self.contrast_slider.min)
                 clamped_max = max(min(max_val, self.contrast_slider.max), self.contrast_slider.min)
                 self.contrast_slider.value = (clamped_min, clamped_max)
+            self._update_export_button_state(layer)
 
     def _initialize_automatic_lighting_ao(self):
         """Initialize ambient occlusion and smooth shading."""
